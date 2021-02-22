@@ -6,7 +6,6 @@ class PaxosProposer
   include Bud
   include PaxosProtocol
 
-  $ballot_num = 0
   $is_leader = false
   $sent_p1a = false
   $num_accept_leader = 0
@@ -21,6 +20,7 @@ class PaxosProposer
 
   state do
     table :acceptors, [:addr] => [:sent_p1a]
+    table :ballot_table, [:num]
     table :payloads, [:client, :payload] => [:slot, :num_accept]
     table :committed_slots, [:slot]
     scratch :payloads_to_send_p2a, [:slot] => [:payload]
@@ -35,6 +35,7 @@ class PaxosProposer
       acceptors <= [[acceptor_addr, false]]
       connect <~ [[acceptor_addr, ip_port, @id, "proposer"]]
     end
+    ballot_table <= [[0]]
   end
 
   bloom do
@@ -43,16 +44,17 @@ class PaxosProposer
     stdio <~ client_to_proposer { |incoming| ["client sent: " + incoming.payload] }
 
     # send p1a TODO wait on heartbeats
-    p1a <~ acceptors do |acceptor|
+    p1a <~ (acceptors * ballot_table).pairs do |acceptor, ballot|
       if !$is_leader && !acceptor.sent_p1a
         acceptors <+- [[acceptor.addr, true]] # update sent_p1a = true
-        [acceptor.addr, ip_port, @id, $ballot_num] #if pending_payloads.exists?
+        [acceptor.addr, ip_port, @id, ballot.num] #if pending_payloads.exists?
       end
     end
 
     # process p1b TODO merge logs, repair
-    acceptors <+- (p1b * acceptors).pairs(:acceptor_client => :addr) do |incoming, acceptor|
-      if incoming.ballot_num == $ballot_num && incoming.id == @id
+    acceptors <+- (p1b * acceptors * ballot_table)
+                    .combos(p1b.acceptor_client => acceptors.addr) do |incoming, acceptor, ballot|
+      if incoming.ballot_num == ballot.num && incoming.id == @id
         $num_accept_leader += 1
       else
         $num_reject_leader += 1
@@ -63,7 +65,7 @@ class PaxosProposer
         [acceptor.addr, false] # update sent_p1a = false, will resend once $is_leader = false in the future
       elsif $num_accept_leader + $num_reject_leader >= majority_acceptors
         # TODO wait a bit
-        $ballot_num += 1
+        ballot_table <+- [ballot.num + 1]
         [acceptor.addr, false]
       end
     end
@@ -80,13 +82,13 @@ class PaxosProposer
     end
 
     # send p2a
-    p2a <~ (acceptors * payloads_to_send_p2a).pairs { |acceptor, p|
-      [acceptor.addr, ip_port, @id, $ballot_num, p.payload, p.slot] }
+    p2a <~ (acceptors * payloads_to_send_p2a * ballot_table).combos { |acceptor, p, ballot|
+      [acceptor.addr, ip_port, @id, ballot.num, p.payload, p.slot] }
 
     # process p2b
     stdio <~ p2b { |incoming| ["p2b id: #{incoming.id.to_s}, ballot num: #{incoming.ballot_num.to_s}, slot: #{incoming.slot.to_s}"] }
-    newly_committed_slots <= (p2b * payloads).pairs(:slot => :slot) do |incoming, p|
-      if incoming.ballot_num == $ballot_num && incoming.id == @id
+    newly_committed_slots <= (p2b * payloads * ballot_table).combos(p2b.slot => payloads.slot) do |incoming, p, ballot|
+      if incoming.ballot_num == ballot.num && incoming.id == @id
         puts "Accepted, num_accept: #{p.num_accept.to_s}, client: #{p.client}"
         if p.num_accept + 1 >= majority_acceptors
           [p.slot]
@@ -101,7 +103,7 @@ class PaxosProposer
 
     # send to client
     proposer_to_client <~ (payloads * newly_committed_slots).pairs(:slot => :slot) do |p, new_slot|
-      [p.client, p.payload, p.slot] unless committed_slots.include?([p.slot])
+      [p.client, p.payload, p.slot] unless committed_slots.include?([p.slot]) # only send once
     end
     committed_slots <+ newly_committed_slots { |new_slot| [new_slot.slot] }
   end
