@@ -20,9 +20,11 @@ class PaxosProposer
   end
 
   state do
-    table :clients, [:id] => [:client]
     table :acceptors, [:addr] => [:sent_p1a]
     table :payloads, [:client, :payload] => [:slot, :num_accept]
+    table :committed_slots, [:slot]
+    scratch :payloads_to_send_p2a, [:slot] => [:payload]
+    scratch :newly_committed_slots, [:slot]
     # TODO heartbeats?
   end
 
@@ -36,9 +38,6 @@ class PaxosProposer
   end
 
   bloom do
-    # connect to clients
-    clients <= connect { |incoming| [incoming.id, incoming.client] if incoming.type == "client" }
-
     # buffer payloads
     payloads <= client_to_proposer { |incoming| [incoming.client, incoming.payload, -1, 0] }
     stdio <~ client_to_proposer { |incoming| ["client sent: " + incoming.payload] }
@@ -70,30 +69,41 @@ class PaxosProposer
     end
     stdio <~ p1b { |incoming| ["accepted id: #{incoming.id.to_s}, ballot num: #{incoming.ballot_num.to_s}"] }
 
-    # send p2a
-    p2a <~ (acceptors * payloads).pairs do |acceptor, p|
+    # set slots
+    payloads <+- payloads do |p|
       if $is_leader && p.slot == -1
         $this_slot = $slot
         $slot += 1
-        payloads <+- [[p.client, p.payload, $this_slot, 0]] # TODO bad logic, fix
-        [acceptor.addr, ip_port, @id, $ballot_num, p.payload, $this_slot]
+        payloads_to_send_p2a <= [[$this_slot, p.payload]]
+        [p.client, p.payload, $this_slot, 0]
       end
     end
 
+    # send p2a
+    p2a <~ (acceptors * payloads_to_send_p2a).pairs { |acceptor, p|
+      [acceptor.addr, ip_port, @id, $ballot_num, p.payload, p.slot] }
+
     # process p2b
     stdio <~ p2b { |incoming| ["p2b id: #{incoming.id.to_s}, ballot num: #{incoming.ballot_num.to_s}, slot: #{incoming.slot.to_s}"] }
-    proposer_to_client <~ (p2b * payloads).pairs(:slot => :slot) do |incoming, p|
+    newly_committed_slots <= (p2b * payloads).pairs(:slot => :slot) do |incoming, p|
       if incoming.ballot_num == $ballot_num && incoming.id == @id
-        puts "Accepted, num_accept: #{p.num_accept.to_s}"
+        puts "Accepted, num_accept: #{p.num_accept.to_s}, client: #{p.client}"
         if p.num_accept + 1 >= majority_acceptors
-          [p.client, p.payload, p.slot]
+          [p.slot]
         else
           payloads <+- [[p.client, p.payload, p.slot, p.num_accept + 1]]
+          nil # prevent payloads from being returned
         end
       else
         # TODO no longer leader
       end
     end
+
+    # send to client
+    proposer_to_client <~ (payloads * newly_committed_slots).pairs(:slot => :slot) do |p, new_slot|
+      [p.client, p.payload, p.slot] unless committed_slots.include?([p.slot])
+    end
+    committed_slots <+ newly_committed_slots { |new_slot| [new_slot.slot] }
   end
 
   def majority_acceptors
