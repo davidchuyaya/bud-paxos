@@ -15,8 +15,8 @@ class PaxosProposer
   state do
     table :acceptors, [:addr] => [:sent_p1a]
     table :ballot_table, [:num]
-    table :leader_accept_table, [:acceptor]
-    table :leader_reject_table, [:acceptor]
+    table :leader_accept_table, [:acceptor] => [:id, :ballot_num, :log]
+    table :leader_reject_table, [:acceptor] => [:id, :ballot_num, :log]
     table :leader_table, [:bool]
     table :slot_table, [:num]
     table :unslotted_payloads, [:client] => [:payload]
@@ -30,7 +30,7 @@ class PaxosProposer
   bootstrap do
     # connect to acceptors
     for i in 1..@num_acceptors
-      acceptor_addr = PaxosProtocol::LOCALHOST + ":" + (PaxosProtocol::ACCEPTOR_START_PORT + i).to_s
+      acceptor_addr = "#{PaxosProtocol::LOCALHOST}:#{(PaxosProtocol::ACCEPTOR_START_PORT + i).to_s}"
       acceptors <= [[acceptor_addr, false]]
       connect <~ [[acceptor_addr, ip_port, @id, "proposer"]]
     end
@@ -44,7 +44,7 @@ class PaxosProposer
   bloom do
     # buffer payloads
     unslotted_payloads <= client_to_proposer { |incoming| [incoming.client, incoming.payload] }
-    stdio <~ client_to_proposer { |incoming| ["client sent: " + incoming.payload] }
+    stdio <~ client_to_proposer { |incoming| ["client sent: #{incoming.payload}"] }
 
     # send p1a TODO wait on heartbeats
     p1a <~ (acceptors * ballot_table * leader_table).combos do |acceptor, ballot, is_leader|
@@ -55,10 +55,10 @@ class PaxosProposer
     end
 
     leader_accept_table <= (p1b * ballot_table).pairs do |incoming, ballot|
-      [[incoming.acceptor_client]] if incoming.ballot_num == ballot.num && incoming.id == @id
+      [[incoming.acceptor_client, incoming.id, incoming.ballot_num, incoming.log]] if incoming.ballot_num == ballot.num && incoming.id == @id
     end
     leader_reject_table <= (p1b * ballot_table).pairs do |incoming, ballot|
-      [[incoming.acceptor_client]] if incoming.ballot_num != ballot.num || incoming.id != @id
+      [[incoming.acceptor_client, incoming.id, incoming.ballot_num, incoming.log]] if incoming.ballot_num != ballot.num || incoming.id != @id
     end
 
     # process p1b TODO merge logs, repair

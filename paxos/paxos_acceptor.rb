@@ -20,9 +20,8 @@ class PaxosAcceptor
   end
 
   bloom do
-    stdio <~ p1a { |incoming| ["p1a id: " + incoming.id.to_s + ", ballot num: " + incoming.ballot_num.to_s] }
-    stdio <~ p2a { |incoming| ["p2a id: " + incoming.id.to_s + ", ballot num: " + incoming.ballot_num.to_s +
-                                 ", payload: " + incoming.payload + ", slot: " + incoming.slot.to_s] }
+    stdio <~ p1a { |incoming| ["p1a id: #{incoming.id.to_s}, ballot num: #{incoming.ballot_num.to_s}"] }
+    stdio <~ p2a { |incoming| ["p2a id: #{incoming.id.to_s}, ballot num: #{incoming.ballot_num.to_s}, payload: #{incoming.payload}, slot: #{incoming.slot.to_s}"] }
 
     # process p1a
     p1b <~ (p1a * ballot_table).pairs do |incoming, ballot|
