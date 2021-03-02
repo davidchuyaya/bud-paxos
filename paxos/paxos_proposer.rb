@@ -5,7 +5,6 @@ require_relative 'paxos_protocol'
 class PaxosProposer
   include Bud
   include PaxosProtocol
-  $slot = 0
 
   def initialize(id, num_acceptors, opts={})
     @id = id
@@ -19,6 +18,8 @@ class PaxosProposer
     table :leader_accept_table, [:acceptor]
     table :leader_reject_table, [:acceptor]
     table :leader_table, [:bool]
+    table :slot_table, [:num]
+    table :unslotted_payloads, [:client] => [:payload]
     table :payloads, [:client, :payload] => [:slot, :num_accept]
     table :committed_slots, [:slot]
     scratch :payloads_to_send_p2a, [:slot] => [:payload]
@@ -37,11 +38,12 @@ class PaxosProposer
     leader_accept_table <= [[0]]
     leader_reject_table <= [[0]]
     leader_table <= [[false]]
+    slot_table <= [[0]]
   end
 
   bloom do
     # buffer payloads
-    payloads <= client_to_proposer { |incoming| [incoming.client, incoming.payload, -1, 0] }
+    unslotted_payloads <= client_to_proposer { |incoming| [incoming.client, incoming.payload] }
     stdio <~ client_to_proposer { |incoming| ["client sent: " + incoming.payload] }
 
     # send p1a TODO wait on heartbeats
@@ -62,15 +64,13 @@ class PaxosProposer
     # process p1b TODO merge logs, repair
     leader_table <= (leader_accept_table.group(nil, count) * leader_reject_table.group(nil, count))
                       .pairs do |num_accept, num_reject|
-      puts "Num accept: #{num_accept[0]}, num reject: #{num_reject[0]}"
+      # note that we subtract one. Num_accept & num_reject both need at least 1 element to trigger this code
+      puts "Num accept: #{num_accept[0]-1}, num reject: #{num_reject[0]-1}"
       if num_accept[0]-1 >= majority_acceptors
         [true]
       elsif num_accept[0]-1 + num_reject[0]-1 >= majority_acceptors
         # TODO wait a bit
-        leader_accept_table <- leader_accept_table { |l1| [l1.acceptor] }
-        leader_reject_table <- leader_reject_table { |l2| [l2.acceptor] }
-        acceptors <+- p1b {|incoming| [incoming.acceptor_client, false]}
-        ballot_table <+- [ballot.num + 1]
+        no_longer_leader
         nil
       end
     end
@@ -78,12 +78,14 @@ class PaxosProposer
     stdio <~ leader_table { |is_leader| ["Is leader: #{is_leader.bool.to_s}"] }
 
     # set slots
-    payloads <+- (payloads * leader_table).pairs do |p, is_leader|
-      if is_leader.bool && p.slot == -1
-        $this_slot = $slot
-        $slot += 1
-        payloads_to_send_p2a <= [[$this_slot, p.payload]]
-        [p.client, p.payload, $this_slot, 0]
+    payloads_to_send_p2a <= (unslotted_payloads.group([:client, :payload], choose_rand(:client)) * leader_table * slot_table)
+                              .pairs do |p, is_leader, slot|
+      if is_leader.bool
+        unslotted_payloads <- [[p.client, p.payload]]
+        payloads <+ [[p.client, p.payload, slot.num, 0]]
+        slot_table <- slot_table { |s1| [s1.num] }
+        slot_table <+ slot_table { |s2| [s2.num + 1] }
+        [slot.num, p.payload]
       end
     end
 
@@ -103,7 +105,7 @@ class PaxosProposer
           nil # prevent payloads from being returned
         end
       else
-        # TODO no longer leader
+        no_longer_leader
       end
     end
 
@@ -116,6 +118,15 @@ class PaxosProposer
 
   def majority_acceptors
     return @num_acceptors / 2 + 1
+  end
+
+  def no_longer_leader
+    # Note: leave at least 1 element in the tables for the rules to trigger correctly
+    leader_accept_table <- leader_accept_table { |l1| [l1.acceptor] unless l1.acceptor == 0 }
+    leader_reject_table <- leader_reject_table { |l2| [l2.acceptor] unless l2.acceptor == 0 }
+    acceptors <+- p1b {|incoming| [incoming.acceptor_client, false]}
+    ballot_table <+- [ballot.num + 1]
+    # TODO reset slots
   end
 end
 
