@@ -5,11 +5,6 @@ require_relative 'paxos_protocol'
 class PaxosProposer
   include Bud
   include PaxosProtocol
-
-  $is_leader = false
-  $sent_p1a = false
-  $num_accept_leader = 0
-  $num_reject_leader = 0
   $slot = 0
 
   def initialize(id, num_acceptors, opts={})
@@ -21,6 +16,9 @@ class PaxosProposer
   state do
     table :acceptors, [:addr] => [:sent_p1a]
     table :ballot_table, [:num]
+    table :leader_accept_table, [:acceptor]
+    table :leader_reject_table, [:acceptor]
+    table :leader_table, [:bool]
     table :payloads, [:client, :payload] => [:slot, :num_accept]
     table :committed_slots, [:slot]
     scratch :payloads_to_send_p2a, [:slot] => [:payload]
@@ -36,6 +34,9 @@ class PaxosProposer
       connect <~ [[acceptor_addr, ip_port, @id, "proposer"]]
     end
     ballot_table <= [[0]]
+    leader_accept_table <= [[0]]
+    leader_reject_table <= [[0]]
+    leader_table <= [[false]]
   end
 
   bloom do
@@ -44,36 +45,41 @@ class PaxosProposer
     stdio <~ client_to_proposer { |incoming| ["client sent: " + incoming.payload] }
 
     # send p1a TODO wait on heartbeats
-    p1a <~ (acceptors * ballot_table).pairs do |acceptor, ballot|
-      if !$is_leader && !acceptor.sent_p1a
+    p1a <~ (acceptors * ballot_table * leader_table).combos do |acceptor, ballot, is_leader|
+      if !is_leader.bool && !acceptor.sent_p1a
         acceptors <+- [[acceptor.addr, true]] # update sent_p1a = true
         [acceptor.addr, ip_port, @id, ballot.num] #if pending_payloads.exists?
       end
     end
 
-    # process p1b TODO merge logs, repair
-    acceptors <+- (p1b * acceptors * ballot_table)
-                    .combos(p1b.acceptor_client => acceptors.addr) do |incoming, acceptor, ballot|
-      if incoming.ballot_num == ballot.num && incoming.id == @id
-        $num_accept_leader += 1
-      else
-        $num_reject_leader += 1
-      end
+    leader_accept_table <= (p1b * ballot_table).pairs do |incoming, ballot|
+      [[incoming.acceptor_client]] if incoming.ballot_num == ballot.num && incoming.id == @id
+    end
+    leader_reject_table <= (p1b * ballot_table).pairs do |incoming, ballot|
+      [[incoming.acceptor_client]] if incoming.ballot_num != ballot.num || incoming.id != @id
+    end
 
-      if $num_accept_leader >= majority_acceptors
-        $is_leader = true
-        [acceptor.addr, false] # update sent_p1a = false, will resend once $is_leader = false in the future
-      elsif $num_accept_leader + $num_reject_leader >= majority_acceptors
+    # process p1b TODO merge logs, repair
+    leader_table <= (leader_accept_table.group(nil, count) * leader_reject_table.group(nil, count))
+                      .pairs do |num_accept, num_reject|
+      puts "Num accept: #{num_accept[0]}, num reject: #{num_reject[0]}"
+      if num_accept[0]-1 >= majority_acceptors
+        [true]
+      elsif num_accept[0]-1 + num_reject[0]-1 >= majority_acceptors
         # TODO wait a bit
+        leader_accept_table <- leader_accept_table { |l1| [l1.acceptor] }
+        leader_reject_table <- leader_reject_table { |l2| [l2.acceptor] }
+        acceptors <+- p1b {|incoming| [incoming.acceptor_client, false]}
         ballot_table <+- [ballot.num + 1]
-        [acceptor.addr, false]
+        nil
       end
     end
     stdio <~ p1b { |incoming| ["accepted id: #{incoming.id.to_s}, ballot num: #{incoming.ballot_num.to_s}"] }
+    stdio <~ leader_table { |is_leader| ["Is leader: #{is_leader.bool.to_s}"] }
 
     # set slots
-    payloads <+- payloads do |p|
-      if $is_leader && p.slot == -1
+    payloads <+- (payloads * leader_table).pairs do |p, is_leader|
+      if is_leader.bool && p.slot == -1
         $this_slot = $slot
         $slot += 1
         payloads_to_send_p2a <= [[$this_slot, p.payload]]
