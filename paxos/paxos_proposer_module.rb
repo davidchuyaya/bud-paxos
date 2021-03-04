@@ -1,7 +1,7 @@
 module PaxosProposerModule
   bootstrap do
     # connect to acceptors
-    for i in 1..@num_acceptors
+    for i in 1..PaxosProtocol::NUM_ACCEPTORS
       acceptor_addr = "#{PaxosProtocol::LOCALHOST}:#{(PaxosProtocol::ACCEPTOR_START_PORT + i).to_s}"
       acceptors <= [[acceptor_addr, false]]
       connect <~ [[acceptor_addr, ip_port, @id, "proposer"]]
@@ -103,7 +103,7 @@ module PaxosProposerModule
   end
 
   def majority_acceptors
-    @num_acceptors / 2 + 1
+    PaxosProtocol::NUM_ACCEPTORS / 2 + 1
   end
 
   def no_longer_leader

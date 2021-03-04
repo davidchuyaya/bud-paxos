@@ -32,6 +32,8 @@ module PaxosProtocol
     table :proposers, [:addr]
   end
 
+  NUM_ACCEPTORS = 3
+  NUM_PROPOSERS = 1
   LOCALHOST = "127.0.0.1"
   PROPOSER_START_PORT = 15000
   ACCEPTOR_START_PORT = 16000

@@ -1,7 +1,7 @@
 module PaxosClientModule
   bootstrap do
     # connect to proposers
-    for i in 1..@num_proposers
+    for i in 1..PaxosProtocol::NUM_PROPOSERS
       proposer_addr = "#{PaxosProtocol::LOCALHOST}:#{(PaxosProtocol::PROPOSER_START_PORT + i).to_s}"
       proposers <= [[proposer_addr]]
       connect <~ [[proposer_addr, ip_port, 1, "client"]] # dummy value for id
