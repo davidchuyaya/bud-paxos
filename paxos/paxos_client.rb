@@ -1,32 +1,16 @@
 require 'rubygems'
 require 'bud'
 require_relative 'paxos_protocol'
+require_relative 'paxos_client_module'
 
 class PaxosClient
   include Bud
   include PaxosProtocol
+  include PaxosClientModule
 
   def initialize(num_proposers, opts={})
     @num_proposers = num_proposers
     super opts
-  end
-
-  state do
-    table :proposers, [:addr]
-  end
-
-  bootstrap do
-    # connect to proposers
-    for i in 1..@num_proposers
-      proposer_addr = "#{PaxosProtocol::LOCALHOST}:#{(PaxosProtocol::PROPOSER_START_PORT + i).to_s}"
-      proposers <= [[proposer_addr]]
-      connect <~ [[proposer_addr, ip_port, 1, "client"]] # dummy value for id
-    end
-  end
-
-  bloom do
-    client_to_proposer <~ (proposers * stdio).pairs { |proposer, io| [proposer.addr, ip_port, io.line] }
-    stdio <~ proposer_to_client { |incoming| ["#{incoming.slot.to_s}) #{incoming.payload}"] }
   end
 end
 
