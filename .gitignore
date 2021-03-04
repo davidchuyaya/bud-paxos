@@ -123,3 +123,6 @@ fabric.properties
 
 # Editor-based Rest Client
 .idea/httpRequests
+
+# budplot
+bud_doc/
