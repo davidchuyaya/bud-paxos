@@ -18,9 +18,10 @@ class PaxosProposer
     table :leader_accept_table, [:acceptor] => [:id, :ballot_num, :log]
     table :leader_reject_table, [:acceptor] => [:id, :ballot_num, :log]
     table :leader_table, [:bool]
-    table :slot_table, [:num]
+    table :slot_table, [:num] # stores all slots used in the past
+    table :acceptor_logs, [:slot] => [:id, :ballot_num, :payload, :num] # num = number of identical ballots for this slot
     table :unslotted_payloads, [:client] => [:payload]
-    table :payloads, [:client, :payload] => [:slot, :num_accept]
+    table :payloads, [:slot] => [:client, :payload, :num_accept]
     table :committed_slots, [:slot]
     scratch :payloads_to_send_p2a, [:slot] => [:payload]
     scratch :newly_committed_slots, [:slot]
@@ -35,8 +36,8 @@ class PaxosProposer
       connect <~ [[acceptor_addr, ip_port, @id, "proposer"]]
     end
     ballot_table <= [[0]]
-    leader_accept_table <= [[0]]
-    leader_reject_table <= [[0]]
+    leader_accept_table <= [[0]] # tables need a dummy value for "count" to execute without waiting an extra timestep
+    leader_reject_table <= [[0]] # ^ same
     leader_table <= [[false]]
     slot_table <= [[0]]
   end
@@ -61,12 +62,13 @@ class PaxosProposer
       [[incoming.acceptor_client, incoming.id, incoming.ballot_num, incoming.log]] if incoming.ballot_num != ballot.num || incoming.id != @id
     end
 
-    # process p1b TODO merge logs, repair
-    leader_table <= (leader_accept_table.group(nil, count) * leader_reject_table.group(nil, count))
+    # process p1b
+    leader_table <+ (leader_accept_table.group(nil, count) * leader_reject_table.group(nil, count))
                       .pairs do |num_accept, num_reject|
       # note that we subtract one. Num_accept & num_reject both need at least 1 element to trigger this code
       puts "Num accept: #{num_accept[0]-1}, num reject: #{num_reject[0]-1}"
       if num_accept[0]-1 >= majority_acceptors
+        leader_table <- [[false]]
         [true]
       elsif num_accept[0]-1 + num_reject[0]-1 >= majority_acceptors
         # TODO wait a bit
@@ -74,18 +76,31 @@ class PaxosProposer
         nil
       end
     end
-    stdio <~ p1b { |incoming| ["accepted id: #{incoming.id.to_s}, ballot num: #{incoming.ballot_num.to_s}"] }
+    # Note: this print has the side effect of populating acceptor logs
+    stdio <~ p1b { |incoming| ["accepted id: #{incoming.id.to_s}, ballot num: #{incoming.ballot_num.to_s}, log: #{uninspected_log(incoming.log)}"] }
     stdio <~ leader_table { |is_leader| ["Is leader: #{is_leader.bool.to_s}"] }
+    stdio <~ acceptor_logs.inspected
+
+    # uncommitted log, enqueue
+    payloads_to_send_p2a <= (leader_table * acceptor_logs).combos do |is_leader, log|
+      if is_leader.bool && log.num <= majority_acceptors && !slot_table.include?([log.slot])
+        puts "repairing"
+        payloads <+ [[log.slot, "", log.payload, 0]]
+        slot_table <+ [[log.slot]]
+        [log.slot, log.payload]
+      end
+    end
 
     # set slots
-    payloads_to_send_p2a <= (unslotted_payloads.group([:client, :payload], choose_rand(:client)) * leader_table * slot_table)
-                              .pairs do |p, is_leader, slot|
+    payloads_to_send_p2a <= (unslotted_payloads.group([:client, :payload], choose_rand(:client)) * leader_table * slot_table.group(nil, max(:num)))
+                              .combos do |p, is_leader, max_slot|
       if is_leader.bool
+        puts "Setting slot, max: #{max_slot}"
+        $slot = max_slot.num + 1
         unslotted_payloads <- [[p.client, p.payload]]
-        payloads <+ [[p.client, p.payload, slot.num, 0]]
-        slot_table <- slot_table { |s1| [s1.num] }
-        slot_table <+ slot_table { |s2| [s2.num + 1] }
-        [slot.num, p.payload]
+        payloads <+ [[$slot, p.client, p.payload, 0]]
+        slot_table <+ [[$slot]] # TODO potential clash with repaired slots
+        [$slot, p.payload]
       end
     end
 
@@ -101,7 +116,7 @@ class PaxosProposer
         if p.num_accept + 1 >= majority_acceptors
           [p.slot]
         else
-          payloads <+- [[p.client, p.payload, p.slot, p.num_accept + 1]]
+          payloads <+- [[p.slot, p.client, p.payload, p.num_accept + 1]]
           nil # prevent payloads from being returned
         end
       else
@@ -111,13 +126,13 @@ class PaxosProposer
 
     # send to client
     proposer_to_client <~ (payloads * newly_committed_slots).pairs(:slot => :slot) do |p, new_slot|
-      [p.client, p.payload, p.slot] unless committed_slots.include?([p.slot]) # only send once
+      [p.client, p.payload, p.slot] unless (committed_slots.include?([p.slot]) || p.client == "") # only send once. Empty client for repaired slots
     end
     committed_slots <+ newly_committed_slots { |new_slot| [new_slot.slot] }
   end
 
   def majority_acceptors
-    return @num_acceptors / 2 + 1
+    @num_acceptors / 2 + 1
   end
 
   def no_longer_leader
@@ -125,8 +140,45 @@ class PaxosProposer
     leader_accept_table <- leader_accept_table { |l1| [l1.acceptor] unless l1.acceptor == 0 }
     leader_reject_table <- leader_reject_table { |l2| [l2.acceptor] unless l2.acceptor == 0 }
     acceptors <+- p1b {|incoming| [incoming.acceptor_client, false]}
-    ballot_table <+- [ballot.num + 1]
-    # TODO reset slots
+    ballot_table <- ballot_table {|b1| [b1.num]}
+    ballot_table <+ ballot_table {|b2| [b2.num + 1]}
+    acceptor_logs <- acceptor_logs {|a| [a.acceptor, a.slot]}
+    slot_table <- slot_table {|s| [s.num] unless s.num == 0}
+    leader_table <- [[true]]
+    leader_table <+ [[false]]
+    # unslot all pending payloads
+    unslotted_payloads <= payloads {|p| [p.client, p.payload]}
+  end
+
+  # sample log: [["[1000, 0, 0, \"Test\"]"], ["[2000, 0, 0, \"test 2\"]"]]
+  def uninspected_log(log)
+    # strip string of unwanted characters: [ , " ] \
+    # Note: will delete these from input if it was a part of the input. Assumes input is clean
+    stripped = log.to_s.gsub(/[\["\]\\]/, '')
+    splitted = stripped.split(', ')
+    # Put into :acceptor_logs, [:slot] => [:id, :ballot_num, :payload, :num]
+    for i in 0...(splitted.length/4)
+      $offset = 4*i
+      $slot = splitted[$offset].to_i
+      $id = splitted[$offset+1].to_i
+      $ballot_num = splitted[$offset+2].to_i
+      $payload = splitted[$offset+3]
+      puts "Inserting slot:#{$slot.to_s}, ballot: [#{$id.to_s},#{$ballot_num.to_s}], payload: #{$payload}"
+      if acceptor_logs.exists?{|prev_log| prev_log.slot == $slot} # not sure why, but "include" doesn't work here
+        acceptor_logs <+- acceptor_logs do |existing_log|
+          if existing_log.slot == $slot
+            if existing_log.ballot_num == $ballot_num && existing_log.id == $id
+              [$slot, $id, $ballot_num, $payload, existing_log.num + 1] # same ballot
+            elsif existing_log.ballot_num < $ballot_num || (existing_log.ballot_num == $ballot_num && existing_log.id < $id)
+              [$slot, $id, $ballot_num, $payload, 1] # overwrite
+            end
+          end
+        end
+      else
+        acceptor_logs <= [[$slot, $id, $ballot_num, $payload, 1]]
+      end
+    end
+    acceptor_logs.inspected.to_s
   end
 end
 

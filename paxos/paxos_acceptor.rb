@@ -17,6 +17,7 @@ class PaxosAcceptor
 
   bootstrap do
     ballot_table <= [[0, 0]]
+    log <= [[0, 0, 0, "Test"], [1, 0, 0, "test 2"]]
   end
 
   bloom do
@@ -28,7 +29,7 @@ class PaxosAcceptor
       if incoming.ballot_num >= ballot.num && incoming.id >= ballot.id
         ballot_table <- [[ballot.id, ballot.num]]
         ballot_table <+ [[incoming.id, incoming.ballot_num]]
-        [incoming.proposer_client, ip_port, incoming.id, incoming.ballot_num] #TODO figure out how to send log
+        [incoming.proposer_client, ip_port, incoming.id, incoming.ballot_num, log.inspected] #TODO figure out how to send log
       else
         [incoming.proposer_client, ip_port, ballot.id, ballot.num]
       end
@@ -39,7 +40,7 @@ class PaxosAcceptor
       if incoming.ballot_num >= ballot.num && incoming.id >= ballot.id
         ballot_table <- [[ballot.id, ballot.num]]
         ballot_table <+ [[incoming.id, incoming.ballot_num]]
-        log <= [[incoming.slot, incoming.id, incoming.ballot_num, incoming.payload]]
+        log <+- [[incoming.slot, incoming.id, incoming.ballot_num, incoming.payload]]
         [incoming.proposer_client, ip_port, incoming.id, incoming.ballot_num, incoming.slot]
       else
         [incoming.proposer_client, ip_port, ballot.id, ballot.num, incoming.slot]

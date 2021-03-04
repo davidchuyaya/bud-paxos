@@ -8,8 +8,6 @@ module PaxosProtocol
     channel :p1b, [:@addr] => [:acceptor_client, :id, :ballot_num, :log] # log = [:slot] => [:id, :ballot_num, :payload]
     channel :p2a, [:@addr] => [:proposer_client, :id, :ballot_num, :payload, :slot]
     channel :p2b, [:@addr] => [:acceptor_client, :id, :ballot_num, :slot]
-
-
   end
 
   LOCALHOST = "127.0.0.1"
