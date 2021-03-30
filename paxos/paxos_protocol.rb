@@ -17,7 +17,8 @@ module PaxosProtocol
     table :slot_table, [:num] # stores all slots used in the past
     table :acceptor_logs, [:p1a_ballot, :acceptor, :slot] => [:id, :ballot_num, :payload]
     table :unslotted_payloads, [:client] => [:payload]
-    table :payloads, [:slot] => [:client, :payload, :num_accept]
+    table :sent_payloads, [:slot] => [:client, :payload]
+    table :payload_acks, [:slot, :acceptor]
     table :committed_slots, [:slot]
     scratch :leader_table, [:bool]
     scratch :leader_accept_table, [:acceptor]
@@ -32,6 +33,7 @@ module PaxosProtocol
     scratch :current_slot, [] => [:num]
     scratch :random_unslotted_payload, [:payload, :client]
     scratch :payloads_to_send_p2a, [:slot] => [:client, :payload]
+    scratch :acks_per_slot, [:slot] => [:num_acks]
     scratch :newly_committed_slots, [:slot]
     # TODO heartbeats? leader failure & re-election?
 

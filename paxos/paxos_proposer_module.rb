@@ -60,11 +60,12 @@ module PaxosProposerModule
     end
     stdio <~ leader_table { |is_leader| ["Is leader: #{is_leader.bool.to_s}"] }
     stdio <~ acceptor_logs.inspected
-    # resend uncommitted logs
+    # acceptor_logs' size is strictly increasing. Ignore logs for ballots smaller than the current one
     relevant_acceptor_logs <= (acceptor_logs * current_ballot).pairs(:p1a_ballot => :num) do |log, ballot|
       puts "Relevant acceptor log added" # Note: This print is necessary for code execution, for some reason
       [log.acceptor, log.slot, log.id, log.ballot_num, log.payload]
     end
+    # count how many acceptors have each payload
     uncommitted_acceptor_logs <= relevant_acceptor_logs.reduce({}) do |memo, log|
       # memo, [:slot] => array [:num, :id, :ballot_num, :payload]
       memo[log.slot] ||= [0, 0, 0, ""]
@@ -83,13 +84,15 @@ module PaxosProposerModule
     end
     stdio <~ relevant_acceptor_logs.inspected
     stdio <~ uncommitted_acceptor_logs.inspected
+    # resend uncommitted logs
     payloads_to_send_p2a <= (leader_table * uncommitted_acceptor_logs).pairs do |is_leader, log|
-      [log.slot, "", log.data[3]] if is_leader.bool && log.data[0] <= majority_acceptors
+      [log.slot, "", log.data[3]] if is_leader.bool && log.data[0] < majority_acceptors
     end
     # discard client commands that are the same slot as an uncommitted command
-    payloads <- (uncommitted_acceptor_logs * payloads).pairs(:slot => :slot) { |log, payload| [log.slot] }
+    sent_payloads <- (uncommitted_acceptor_logs * sent_payloads).pairs(:slot => :slot) { |log, payload| [log.slot] }
+    payload_acks <- (uncommitted_acceptor_logs * payload_acks).pairs(:slot => :slot) { |log, payload| [log.slot] }
 
-    # send p2a
+    # send p2a. Use the slot # that's larger than the largest assigned locally & the largest slot in acceptor logs
     max_local_slot <= slot_table.group([], max(:num))
     max_acceptor_log_slot <= uncommitted_acceptor_logs.group([], max(:slot))
     current_slot <= (max_local_slot * max_acceptor_log_slot).pairs {|slot_local, slot_acceptor| [slot_local, slot_acceptor].max }
@@ -103,24 +106,24 @@ module PaxosProposerModule
     slot_table <+ (random_unslotted_payload * leader_table * current_slot).combos do |p, is_leader, slot|
       [slot.num + 1] if is_leader.bool
     end
-    payloads <+ payloads_to_send_p2a { |p| [p.slot, p.client, p.payload, 0] }
+    sent_payloads <+ payloads_to_send_p2a { |p| [p.slot, p.client, p.payload] }
     p2a <~ (acceptors * payloads_to_send_p2a * current_ballot).combos { |acceptor, p, ballot|
       [acceptor.addr, ip_port, @id, ballot.num, p.payload, p.slot] }
 
     # process p2b
     stdio <~ p2b { |incoming| ["p2b id: #{incoming.id.to_s}, ballot num: #{incoming.ballot_num.to_s}, slot: #{incoming.slot.to_s}"] }
-    payloads <+- (p2b * payloads * current_ballot).combos(p2b.slot => payloads.slot) do |incoming, p, ballot|
-      # TODO fix num_accept count
-      [p.slot, p.client, p.payload, p.num_accept + 1] if incoming.ballot_num == ballot.num && incoming.id == @id
+    payload_acks <= (p2b * current_ballot).pairs do |incoming, ballot|
+      [incoming.slot, incoming.acceptor_client] if incoming.ballot_num == ballot.num && incoming.id == @id
     end
-    newly_committed_slots <= payloads { |p| [p.slot] if p.num_accept + 1 >= majority_acceptors }
+    acks_per_slot <= payload_acks.group([:slot], count)
+    newly_committed_slots <= acks_per_slot { |acks| [acks.slot] if acks.num_acks >= majority_acceptors }
     # on reject
     ballot_table <+ (p2b * current_ballot).pairs do |incoming, ballot|
       [incoming.ballot_num] if incoming.ballot_num > ballot.num || (incoming.ballot_num == ballot.num && incoming.id > @id)
     end
 
     # send to client
-    proposer_to_client <~ (payloads * newly_committed_slots).pairs(:slot => :slot) do |p, new_slot|
+    proposer_to_client <~ (sent_payloads * newly_committed_slots).pairs(:slot => :slot) do |p, new_slot|
       [p.client, p.payload, p.slot] unless (committed_slots.include?([p.slot]) || p.client == "") # only send once. Empty client for repaired slots
     end
     committed_slots <+ newly_committed_slots { |new_slot| [new_slot.slot] }
