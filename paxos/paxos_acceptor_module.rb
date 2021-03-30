@@ -1,6 +1,7 @@
 module PaxosAcceptorModule
   bootstrap do
     acceptor_ballot_table <= [[0, 0]]
+    log <= [[0, 1, 1, "hi"]]
   end
 
   bloom do
