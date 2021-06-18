@@ -6,9 +6,10 @@ module PaxosProposerModule
       acceptors <= [[acceptor_addr]]
       connect <~ [[acceptor_addr, ip_port, @id, "proposer"]]
     end
-    ballot_table <= [[1]]
+    ballot_table <= [[@id, 1]]
     leader_table <= [[false]]
     slot_table <= [[0]]
+    id_table <= [[@id]]
   end
 
   bloom do
@@ -17,29 +18,36 @@ module PaxosProposerModule
     stdio <~ client_to_proposer { |incoming| ["client sent: #{incoming.payload}"] }
 
     # send p1a TODO wait on heartbeats
-    current_ballot <= ballot_table.group([], max(:num))
+    current_ballot <= ballot_table.group([:id, :num], max(:num))
+                                  .group([:num], max(:id)) do |num, id|
+      if id == @id
+        [num] # we are leader, don't increment
+      else
+        [num + 1] # increment
+      end
+    end
     p1a <~ (acceptors * current_ballot * leader_table).combos do |acceptor, ballot, is_leader|
       [acceptor.addr, ip_port, @id, ballot.num] if !is_leader.bool && !sent_p1a_for_ballot.include?([ballot.num])
     end
+    # TODO is this correct? Want to make sure that we do not resend p1a (assumes reliable channels)
     sent_p1a_for_ballot <+ current_ballot { |ballot| [ballot.num] }
 
     # process p1b
-    p1b_received <+- p1b { |incoming| [incoming.acceptor_client, incoming.id, incoming.ballot_num, incoming.log] }
-    leader_accept_table <= (p1b_received * current_ballot).pairs do |incoming, ballot|
-      [incoming.acceptor] if incoming.id == @id && incoming.ballot_num == ballot.num
-    end
-    leader_reject_table <= (p1b_received * current_ballot).pairs do |incoming, ballot|
-      [incoming.acceptor, incoming.ballot_num] if incoming.ballot_num > ballot.num || (incoming.id > @id && incoming.ballot_num == ballot.num)
-    end
+    p1b_received <= p1b { |incoming| [incoming.acceptor_client, incoming.sent_ballot_num, incoming.id,
+                                      incoming.ballot_num, incoming.log] }
+    leader_accept_table <= (p1b_received * current_ballot * id_table)
+                             .combos(p1b_received.sent_ballot_num => current_ballot.num,
+                                     p1b_received.ballot_num => current_ballot.num,
+                                     p1b_received.id => id_table.id) { |incoming, ballot, id| [incoming.acceptor] }
     num_accept_table <= leader_accept_table.group([], count)
-    leader_table <= num_accept_table { |num_accept| [num_accept.num >= majority_acceptors && !leader_reject_table.exists?] }
-    # on rejection
-    max_reject_ballot <= leader_reject_table.group([], max(:ballot_num))
-    ballot_table <+ max_reject_ballot { |max_ballot| [max_ballot.ballot_num + 1] }
+    leader_table <= num_accept_table { |num_accept| [num_accept.num >= majority_acceptors] }
+    # on (potential) rejection
+    ballot_table <= p1b_received.group([:id], max(:ballot_num))
     # parse logs received in p1b
     # Note: this always returns nil; but acceptor_logs is on lhs to show dependence
     acceptor_logs <+ (p1b * current_ballot).pairs do |incoming, ballot|
-      if incoming.id == @id && incoming.ballot_num == ballot.num # No need to store logs if we're not the leader
+      if incoming.sent_ballot_num == ballot.num && incoming.id == @id &&
+        incoming.ballot_num == ballot.num # No need to store logs if we're not the leader
         # sample log: [["[1000, 0, 0, \"Test\"]"], ["[2000, 0, 0, \"test 2\"]"]]
         # strip string of unwanted characters: [ , " ] \
         # Note: will delete these from input if it was a part of the input. Assumes input is clean
@@ -59,9 +67,8 @@ module PaxosProposerModule
       end
     end
     stdio <~ leader_table { |is_leader| ["Is leader: #{is_leader.bool.to_s}"] }
-    stdio <~ acceptor_logs.inspected
     # acceptor_logs' size is strictly increasing. Ignore logs for ballots smaller than the current one
-    relevant_acceptor_logs <= (acceptor_logs * current_ballot).pairs(:p1a_ballot => :num) do |log, ballot|
+    relevant_acceptor_logs <= (acceptor_logs * current_ballot).pairs(:sent_ballot_num => :num) do |log, ballot|
       puts "Relevant acceptor log added" # Note: This print is necessary for code execution, for some reason
       [log.acceptor, log.slot, log.id, log.ballot_num, log.payload]
     end
@@ -89,6 +96,7 @@ module PaxosProposerModule
       [log.slot, "", log.data[3]] if is_leader.bool && log.data[0] < majority_acceptors
     end
     # discard client commands that are the same slot as an uncommitted command
+    # TODO might be a monotonic way to do this
     sent_payloads <- (uncommitted_acceptor_logs * sent_payloads).pairs(:slot => :slot) { |log, payload| [log.slot] }
     payload_acks <- (uncommitted_acceptor_logs * payload_acks).pairs(:slot => :slot) { |log, payload| [log.slot] }
 
@@ -119,7 +127,7 @@ module PaxosProposerModule
     newly_committed_slots <= acks_per_slot { |acks| [acks.slot] if acks.num_acks >= majority_acceptors }
     # on reject
     ballot_table <+ (p2b * current_ballot).pairs do |incoming, ballot|
-      [incoming.ballot_num] if incoming.ballot_num > ballot.num || (incoming.ballot_num == ballot.num && incoming.id > @id)
+      [incoming.id, incoming.ballot_num] if incoming.ballot_num > ballot.num || (incoming.ballot_num == ballot.num && incoming.id > @id)
     end
 
     # send to client
