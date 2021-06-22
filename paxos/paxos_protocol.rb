@@ -25,8 +25,9 @@ module PaxosProtocol
     scratch :leader_accept_table, [:acceptor]
     scratch :current_ballot, [:num]
     scratch :num_accept_table, [] => [:num]
-    scratch :relevant_acceptor_logs, [:acceptor, :slot] => [:id, :ballot_num, :payload]
-    scratch :uncommitted_acceptor_logs, [:slot] => [:data]
+    scratch :relevant_acceptor_logs, [:acceptor, :slot, :id, :ballot_num] => [:payload]
+    scratch :max_ballot_acceptor_log, relevant_acceptor_logs.schema
+    scratch :counts_acceptor_log, [:slot, :id, :ballot_num] => [:payload, :num_distinct]
     scratch :max_local_slot, [] => [:num]
     scratch :max_acceptor_log_slot, [] => [:num]
     scratch :current_slot, [] => [:num]
@@ -36,9 +37,11 @@ module PaxosProtocol
     scratch :newly_committed_slots, [:slot]
 
     # acceptor
-    table :log, [:slot] => [:id, :ballot_num, :payload]
+    table :log, [:slot, :id, :ballot_num] => [:payload]
     table :acceptor_ballot_table, [:id, :num]
-    scratch :max_acceptor_ballot, [:id, :num]
+    scratch :max_acceptor_ballot, acceptor_ballot_table.schema
+    scratch :maximal_ballots, acceptor_ballot_table.schema
+    scratch :max_log, log.schema
 
     # client
     table :proposers, [:addr]

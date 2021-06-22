@@ -18,8 +18,8 @@ module PaxosProposerModule
     stdio <~ client_to_proposer { |incoming| ["client sent: #{incoming.payload}"] }
 
     # send p1a TODO wait on heartbeats
-    current_ballot <= ballot_table.group([:id, :num], max(:num))
-                                  .group([:num], max(:id)) do |num, id|
+    current_ballot <= ballot_table.argmax([], :num)
+                                  .argmax([], :id) do |num, id|
       if id == @id
         [num] # we are leader, don't increment
       else
@@ -30,6 +30,7 @@ module PaxosProposerModule
       [acceptor.addr, ip_port, @id, ballot.num] if !is_leader.bool && !sent_p1a_for_ballot.include?([ballot.num])
     end
     # TODO is this correct? Want to make sure that we do not resend p1a (assumes reliable channels)
+    # Need this to execute after we send p1a
     sent_p1a_for_ballot <+ current_ballot { |ballot| [ballot.num] }
 
     # process p1b
@@ -42,29 +43,28 @@ module PaxosProposerModule
     num_accept_table <= leader_accept_table.group([], count)
     leader_table <= num_accept_table { |num_accept| [num_accept.num >= majority_acceptors] }
     # on (potential) rejection
-    ballot_table <= p1b_received.group([:id], max(:ballot_num))
+    ballot_table <= p1b_received { |incoming| [incoming.id, incoming.ballot_num] }
     # parse logs received in p1b
     # Note: this always returns nil; but acceptor_logs is on lhs to show dependence
-    acceptor_logs <+ (p1b * current_ballot).pairs do |incoming, ballot|
-      if incoming.sent_ballot_num == ballot.num && incoming.id == @id &&
-        incoming.ballot_num == ballot.num # No need to store logs if we're not the leader
-        # sample log: [["[1000, 0, 0, \"Test\"]"], ["[2000, 0, 0, \"test 2\"]"]]
-        # strip string of unwanted characters: [ , " ] \
-        # Note: will delete these from input if it was a part of the input. Assumes input is clean
-        stripped = incoming.log.to_s.gsub(/[\["\]\\]/, '')
-        splitted = stripped.split(', ')
-        for i in 0...(splitted.length/4)
-          $offset = 4*i
-          $slot = splitted[$offset].to_i
-          $id = splitted[$offset+1].to_i
-          $ballot_num = splitted[$offset+2].to_i
-          $payload = splitted[$offset+3]
-          puts "Inserting slot:#{$slot.to_s}, ballot: [#{$id.to_s},#{$ballot_num.to_s}], payload: #{$payload}"
-          acceptor_logs <= [[incoming.ballot_num, incoming.acceptor_client, $slot, $id, $ballot_num, $payload]]
-        end
-        puts "accepted id: #{incoming.id.to_s}, ballot num: #{incoming.ballot_num.to_s}"
-        nil
+    acceptor_logs <+ (p1b * current_ballot * id_table)
+                       .combos(p1b.sent_ballot_num => current_ballot.num,
+                               p1b.ballot_num => current_ballot.num,
+                               p1b.id => id_table.id) do |incoming, ballot, id|
+      # sample log: [["[1000, 0, 0, \"Test\"]"], ["[2000, 0, 0, \"test 2\"]"]]
+      # strip string of unwanted characters: [ , " ] \
+      # Note: will delete these from input if it was a part of the input. Assumes input is clean
+      stripped = incoming.log.to_s.gsub(/[\["\]\\]/, '')
+      splitted = stripped.split(', ')
+      for i in 0...(splitted.length/4)
+        $offset = 4*i
+        $slot = splitted[$offset].to_i
+        $id = splitted[$offset+1].to_i
+        $ballot_num = splitted[$offset+2].to_i
+        $payload = splitted[$offset+3]
+        puts "Inserting slot: #{$slot.to_s}, ballot: [#{$id.to_s},#{$ballot_num.to_s}], payload: #{$payload}"
+        acceptor_logs <= [[incoming.ballot_num, incoming.acceptor_client, $slot, $id, $ballot_num, $payload]]
       end
+      nil
     end
     stdio <~ leader_table { |is_leader| ["Is leader: #{is_leader.bool.to_s}"] }
     # acceptor_logs' size is strictly increasing. Ignore logs for ballots smaller than the current one
@@ -72,38 +72,29 @@ module PaxosProposerModule
       puts "Relevant acceptor log added" # Note: This print is necessary for code execution, for some reason
       [log.acceptor, log.slot, log.id, log.ballot_num, log.payload]
     end
-    # count how many acceptors have each payload
-    uncommitted_acceptor_logs <= relevant_acceptor_logs.reduce({}) do |memo, log|
-      # memo, [:slot] => array [:num, :id, :ballot_num, :payload]
-      memo[log.slot] ||= [0, 0, 0, ""]
-      if memo[log.slot][2] < log.ballot_num || (memo[log.slot][2] == log.ballot_num && memo[log.slot][1] < log.id)
-        memo[log.slot][1] = log.id
-        memo[log.slot][2] = log.ballot_num # overwrite ballot
-        if memo[log.slot][3] != log.payload
-          memo[log.slot][0] = 0
-          memo[log.slot][3] = log.payload # overwrite payload
-        end
-      end
-      if memo[log.slot][3] == log.payload
-        memo[log.slot][0] += 1 # increment count
-      end
-      memo
-    end
-    stdio <~ relevant_acceptor_logs.inspected
-    stdio <~ uncommitted_acceptor_logs.inspected
-    # resend uncommitted logs
-    payloads_to_send_p2a <= (leader_table * uncommitted_acceptor_logs).pairs do |is_leader, log|
-      [log.slot, "", log.data[3]] if is_leader.bool && log.data[0] < majority_acceptors
+
+    # max ballot (with payload) per slot
+    max_ballot_acceptor_log <= relevant_acceptor_logs.argmax([:slot], :ballot_num)
+                                                     .argmax([:slot], :id)
+    # num distinct acceptors per slot with the max ballot
+    counts_acceptor_log <= max_ballot_acceptor_log.group([:slot, :id, :ballot_num, :payload], count(:acceptor))
+    # TODO change majority_acceptors into lattice quorum
+    # resend uncommitted logs TODO only do once per leader election (will currently run continuously after getting majority)
+    payloads_to_send_p2a <= (leader_table * counts_acceptor_log).pairs do |is_leader, log|
+      [log.slot, "", log.payload] if is_leader.bool && log.num_distinct < majority_acceptors
     end
     # discard client commands that are the same slot as an uncommitted command
+    # TODO don't do that ^, reschedule instead
     # TODO might be a monotonic way to do this
-    sent_payloads <- (uncommitted_acceptor_logs * sent_payloads).pairs(:slot => :slot) { |log, payload| [log.slot] }
-    payload_acks <- (uncommitted_acceptor_logs * payload_acks).pairs(:slot => :slot) { |log, payload| [log.slot] }
+    # sent_payloads <- (uncommitted_acceptor_logs * sent_payloads).pairs(:slot => :slot) { |log, payload| [log.slot] }
+    # payload_acks <- (uncommitted_acceptor_logs * payload_acks).pairs(:slot => :slot) { |log, payload| [log.slot] }
 
+    # TODO allow triggering hole-filling (from the replicas?)
     # send p2a. Use the slot # that's larger than the largest assigned locally & the largest slot in acceptor logs
     max_local_slot <= slot_table.group([], max(:num))
-    max_acceptor_log_slot <= uncommitted_acceptor_logs.group([], max(:slot))
+    max_acceptor_log_slot <= counts_acceptor_log.group([], max(:slot))
     current_slot <= (max_local_slot * max_acceptor_log_slot).pairs {|slot_local, slot_acceptor| [slot_local, slot_acceptor].max }
+
     random_unslotted_payload <= unslotted_payloads.group([:payload], choose_rand(:client))
     payloads_to_send_p2a <= (random_unslotted_payload * leader_table * current_slot).combos do |p, is_leader, slot|
       [slot.num + 1, p.client, p.payload] if is_leader.bool
@@ -125,10 +116,8 @@ module PaxosProposerModule
     end
     acks_per_slot <= payload_acks.group([:slot], count)
     newly_committed_slots <= acks_per_slot { |acks| [acks.slot] if acks.num_acks >= majority_acceptors }
-    # on reject
-    ballot_table <+ (p2b * current_ballot).pairs do |incoming, ballot|
-      [incoming.id, incoming.ballot_num] if incoming.ballot_num > ballot.num || (incoming.ballot_num == ballot.num && incoming.id > @id)
-    end
+    # on (potential) reject
+    ballot_table <= p2b { |incoming| [incoming.id, incoming.ballot_num] }
 
     # send to client
     proposer_to_client <~ (sent_payloads * newly_committed_slots).pairs(:slot => :slot) do |p, new_slot|

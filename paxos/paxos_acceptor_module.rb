@@ -8,21 +8,24 @@ module PaxosAcceptorModule
     stdio <~ p1a { |incoming| ["p1a id: #{incoming.id.to_s}, ballot num: #{incoming.ballot_num.to_s}"] }
     stdio <~ p2a { |incoming| ["p2a id: #{incoming.id.to_s}, ballot num: #{incoming.ballot_num.to_s}, payload: #{incoming.payload}, slot: #{incoming.slot.to_s}"] }
 
+    # TODO Use queue so acceptors can't batch: https://github.com/bloom-lang/bud-sandbox/blob/master/ordering/queue.rb
     acceptor_ballot_table <= p1a { |incoming| [incoming.id, incoming.ballot_num] }
     acceptor_ballot_table <= p2a { |incoming| [incoming.id, incoming.ballot_num] }
+    
     # update ballot to whatever largest value we get (partial order)
-    max_acceptor_ballot <= acceptor_ballot_table.group([:id, :num], max(:num))
-                                                .group([:num], max(:id)) { |num, id| [id, num] }
+    maximal_ballots <= acceptor_ballot_table.argmax([], :num)
+    max_acceptor_ballot <= maximal_ballots.argmax([], :id)
 
-    # TODO reduce concurrency in processing; must update acceptor_ballot_table before p1b or p2b responses
-    # Then we can also remove the if statements and just return the current max ballot
+    # find the max value entry for each slot in the log
+    max_log <= log.argmax([:slot], :ballot_num)
+                  .argmax([:slot], :id)
 
     # process p1a
     p1b <~ (p1a * max_acceptor_ballot).pairs do |incoming, ballot|
       if incoming.ballot_num >= ballot.num && incoming.id >= ballot.id
-        [incoming.proposer_client, ip_port, incoming.id, incoming.ballot_num, incoming.ballot_num, log.inspected]
+        [incoming.proposer_client, ip_port, incoming.id, incoming.ballot_num, incoming.ballot_num, max_log.inspected]
       else
-        [incoming.proposer_client, ip_port, ballot.id, ballot.num, incoming.ballot_num, log.inspected]
+        [incoming.proposer_client, ip_port, ballot.id, ballot.num, incoming.ballot_num, max_log.inspected]
       end
     end
 
@@ -34,7 +37,7 @@ module PaxosAcceptorModule
         [incoming.proposer_client, ip_port, ballot.id, ballot.num, incoming.slot]
       end
     end
-    log <+- (p2a * max_acceptor_ballot).pairs do |incoming, ballot|
+    log <= (p2a * max_acceptor_ballot).pairs do |incoming, ballot|
       [[incoming.slot, incoming.id, incoming.ballot_num, incoming.payload]] if incoming.ballot_num >= ballot.num && incoming.id >= ballot.id
     end
   end
