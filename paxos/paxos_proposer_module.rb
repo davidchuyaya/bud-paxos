@@ -33,8 +33,7 @@ module PaxosProposerModule
     p1a_sent <+ p1a_buffer
 
     # process p1b
-    p1b_received <= p1b { |incoming| [incoming.acceptor_client, incoming.sent_ballot_num, incoming.id,
-                                      incoming.ballot_num, incoming.log] }
+    p1b_received <= p1b
     leader_accept_table <= (p1b_received * current_ballot * id_table)
                              .combos(p1b_received.sent_ballot_num => current_ballot.num,
                                      p1b_received.ballot_num => current_ballot.num,
