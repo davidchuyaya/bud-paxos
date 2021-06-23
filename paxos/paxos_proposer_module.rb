@@ -26,12 +26,11 @@ module PaxosProposerModule
         [num + 1] # increment
       end
     end
-    p1a <~ (acceptors * current_ballot * leader_table).combos do |acceptor, ballot, is_leader|
-      [acceptor.addr, ip_port, @id, ballot.num] if !is_leader.bool && !sent_p1a_for_ballot.include?([ballot.num])
+    p1a_buffer <= (acceptors * current_ballot * leader_table).combos do |acceptor, ballot, is_leader|
+      [acceptor.addr, ip_port, @id, ballot.num] if !is_leader.bool
     end
-    # TODO is this correct? Want to make sure that we do not resend p1a (assumes reliable channels)
-    # Need this to execute after we send p1a
-    sent_p1a_for_ballot <+ current_ballot { |ballot| [ballot.num] }
+    p1a <~ p1a_buffer.notin(p1a_sent)
+    p1a_sent <+ p1a_buffer
 
     # process p1b
     p1b_received <= p1b { |incoming| [incoming.acceptor_client, incoming.sent_ballot_num, incoming.id,
@@ -115,15 +114,16 @@ module PaxosProposerModule
       [incoming.slot, incoming.acceptor_client] if incoming.ballot_num == ballot.num && incoming.id == @id
     end
     acks_per_slot <= payload_acks.group([:slot], count)
-    newly_committed_slots <= acks_per_slot { |acks| [acks.slot] if acks.num_acks >= majority_acceptors }
+    committed_slots_buffer <= acks_per_slot { |acks| [acks.slot] if acks.num_acks >= majority_acceptors }
     # on (potential) reject
     ballot_table <= p2b { |incoming| [incoming.id, incoming.ballot_num] }
 
     # send to client
+    newly_committed_slots <= committed_slots_buffer.notin(committed_slots_sent)
     proposer_to_client <~ (sent_payloads * newly_committed_slots).pairs(:slot => :slot) do |p, new_slot|
-      [p.client, p.payload, p.slot] unless (committed_slots.include?([p.slot]) || p.client == "") # only send once. Empty client for repaired slots
+      [p.client, p.payload, p.slot] unless p.client == "" # Empty client for repaired slots
     end
-    committed_slots <+ newly_committed_slots { |new_slot| [new_slot.slot] }
+    committed_slots_sent <+ committed_slots_buffer
   end
 
   def majority_acceptors

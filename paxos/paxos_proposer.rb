@@ -8,16 +8,14 @@ class PaxosProposer
   include PaxosProtocol
   include PaxosProposerModule
 
-  def initialize(id, num_acceptors, opts={})
+  def initialize(id, opts={})
     @id = id
-    @num_acceptors = num_acceptors
     super opts
   end
 end
 
-# Arguments: proposer ID (starting from 1), num acceptors
+# Arguments: proposer ID (starting from 1)
 id = ARGV[0].to_i
-num_acceptors = ARGV[1].to_i
-program = PaxosProposer.new(id, num_acceptors, :stdin => $stdin, :ip => PaxosProtocol::LOCALHOST,
+program = PaxosProposer.new(id, :stdin => $stdin, :ip => PaxosProtocol::LOCALHOST,
                             :port => PaxosProtocol::PROPOSER_START_PORT + id)
 program.run_fg
