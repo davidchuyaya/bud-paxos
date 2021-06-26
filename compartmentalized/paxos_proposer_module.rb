@@ -39,6 +39,7 @@ module PaxosProposerModule
   
       # process p1b
       p1b_received <= p1b
+      #  NOTE: Match partition here because ballot is partitioned
       leader_accept_table <= (p1b_received * current_ballot * id_table)
                                .combos(p1b_received.partition => current_ballot.partition,
                                        p1b_received.sent_ballot_num => current_ballot.num,
@@ -51,7 +52,7 @@ module PaxosProposerModule
       # on (potential) rejection
       ballot_table <= p1b_received { |incoming| [incoming.partition, incoming.id, incoming.ballot_num] }
       # parse logs received in p1b
-      # Note: this always returns nil; but acceptor_logs is on lhs to show dependence
+      # Note: this always returns nil; but acceptor_logs is on lhs to show dependence NOTE: Partition here because ballot is partitioned
       acceptor_logs <+ (p1b * current_ballot * id_table)
                          .combos(p1b.partition => current_ballot.partition,
                                  p1b.sent_ballot_num => current_ballot.num,
@@ -75,7 +76,7 @@ module PaxosProposerModule
       end
       stdio <~ leader_table { |is_leader| ["Is leader #{is_leader.bool.to_s} for partition #{is_leader.partition.to_s}"] }
       # acceptor_logs' size is strictly increasing. Ignore logs for ballots smaller than the current one
-      # TODO we want to filter by map(slot) = partition, but can't write that in pairs
+      # TODO we want to filter by map(slot) = partition, but can't write that in pairs. NOTE: Partition here because ballot is partitioned
       relevant_acceptor_logs <= (acceptor_logs * current_ballot).pairs(:sent_ballot_num => :num) do |log, ballot|
         puts "Relevant acceptor log added" # Note: This print is necessary for code execution, for some reason
         [log.acceptor, log.slot, log.id, log.ballot_num, log.payload] if ballot.partition == slot_to_partition(log.slot)
@@ -126,6 +127,7 @@ module PaxosProposerModule
   
       # process p2b
       stdio <~ p2b { |incoming| ["p2b id: #{incoming.id.to_s}, ballot num: #{incoming.ballot_num.to_s}, slot: #{incoming.slot.to_s}"] }
+      # NOTE: Partition here because ballot is partitioned
       payload_acks <= (p2b * current_ballot).pairs(:partition => :partition) do |incoming, ballot|
         [incoming.slot, incoming.acceptor_client] if incoming.ballot_num == ballot.num && incoming.id == @id
       end
