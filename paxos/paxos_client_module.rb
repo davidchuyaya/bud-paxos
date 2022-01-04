@@ -9,7 +9,7 @@ module PaxosClientModule
   end
 
   bloom do
-    client_to_proposer <~ (proposers * stdio).pairs { |proposer, io| [proposer.addr, ip_port, io.line] }
+    client_to_proposer <~ (proposers * stdio).pairs { |proposer, io| [proposer.addr, "#{ip_port}#{PaxosProtocol::DELIMITER}#{io.line}"] }
     stdio <~ proposer_to_client { |incoming| ["#{incoming.slot.to_s}) #{incoming.payload}"] }
   end
 end
