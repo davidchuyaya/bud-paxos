@@ -6,10 +6,11 @@
 # EDB
 id(id) # increment from 1
 acceptors(id)
+proposers(id)
 quorum(size)
 ballotGeq(id1, num1, id2, num2) # true if num1 >= num2 or (num1 = num2 and id1 >= id2)
-timeout(t) # resends p1b after this many seconds. Must be larger than # of proposers, since we check its equality with id
 nat(n) # all natural numbers
+leaderTimeout(n) # time to wait before judging leader as dead.
 
 # IDB
 client_in(payload, l, t)
@@ -18,15 +19,18 @@ client_out(payload, slot, l, t)
 ballot(num, l, t) # Assume starts with num = 0
 NewBallot(num, l, t)
 IsLeader(l, t) # bool, has an entry for this time if we are leader
+RelevantP1bs(acceptorID, logSize, l, t)
 CountMatchingP1bs(c, l, t) # number of p1bs that have us as leader
+GeqP1bs(acceptorID, l, t)
+CountGeqP1bs(c, l, t) # number of p1bs that have ballot at least as large as ours
 MaxP1bBallotNum(num, l, t)
 MaxP1bBallot(id, num, l, t) # largest ballot seen in p1bs
 MaxP2bBallotNum(num, l, t)
 MaxP2bBallot(id, num, l, t) # largest ballot seen in p2bs
-timeoutCounter(num, l, t) # for stable leader election to prevent preemption. Assume starts with num = 0
+LatestIAmLeader(arrivalTime, l, t)
+LeaderExpired(l, t)
 
-RelevantP1bLogs(acceptorID, payload, slot, payloadBallotID, payloadBallotNum) # relevant = has our ballot
-RelevantP1bs(acceptorID, logSize)
+RelevantP1bLogs(acceptorID, payload, slot, payloadBallotID, payloadBallotNum, l, t) # relevant = has our ballot
 P1bLogFromAcceptor(acceptorID, c, l, t) # count of p1b entries received from each acceptor
 P1bNumAcceptorsLogReceived(c, l, t) # number of acceptors whose full p1b log has arrived
 canSendP2a(l, t) # true once all p1b logs have been received from acceptors who sent p1bs, reset to false once we lose leader election. Reason for persisting: reconciling p1b must happen before any new slots are chosen; new slots are only chosen when this is true, so this must be set to true THE TIMESTEP AFTER all p1bs are reconciled.
@@ -47,6 +51,8 @@ p1b(acceptorID, logSize, ballotID, ballotNum, l, t) # NOTE: logSize necessary be
 p1bLog(acceptorID, payload, slot, payloadBallotID, payloadBallotNum, ballotID, ballotNum, l, t)
 p2a(proposerID, payload, slot, ballotID, ballotNum, l, t)
 p2b(acceptorID, payload, slot, ballotID, ballotNum, l, t)
+timeout(l, t) # Assume starts with a fact. async channel that tells us when to resend p1a
+iAmLeader(arrivalTime, l, t) # Assume starts with 0.
 ######################## end relation definitions
 
 
@@ -56,31 +62,38 @@ p1bLog(a, p, s, pi, pn, i, n, l, t') :- p1bLog(a, p, s, pi, pn, i, n, l, t), suc
 p2b(p, s, i, n, l, t') :- p2b(p, s, i, n, l, t), succ(t, t')
 payloads(p, l, t) :- client_in(p, l, t)
 payloads(p, l, t') :- payloads(p, l, t), succ(t, t')
+iAmLeader(arrivalTime, l, t') :- iAmLeader(arrivalTime, l, t), succ(t, t')
 
 
-
-######################## stable leader election TODO: Need to implement "I am leader" messages
-CountMatchingP1bs(count<acceptorID>, l, t) :- id(i), ballot(num, l, t), p1b(acceptorID, _, i, num, l, t)
+######################## stable leader election
+RelevantP1bs(acceptorID, logSize, l, t) :- p1b(acceptorID, logSize, i, num, l, t), id(i), ballot(num, l, t)
+CountMatchingP1bs(count<acceptorID>, l, t) :- RelevantP1bs(acceptorID, logSize, l, t)
+GeqP1bs(acceptorID, l, t) :- p1b(acceptorID, _, acceptorMaxID, acceptorMaxNum, l, t), id(i), ballot(num, l, t), ballotGeq(acceptorMaxID, acceptorMaxNum, i, num)
+CountGeqP1bs(count<acceptorID>, l, t) :- GeqP1bs(acceptorID, l, t)
 MaxP1bBallotNum(max<num>, l, t) :- p1b(_, _, _, num, l, t)
 MaxP1bBallot(max<id>, num, l, t) :- MaxP1bBallotNum(num, l, t), p1b(_, _, id, num, l, t)
 MaxP2bBallotNum(max<num>, l, t) :- p2b(_, _, _, num, l, t)
 MaxP2bBallot(max<id>, num, l, t) :- MaxP2bBallotNum(num, l, t), p2b(_, _, id, num, l, t)
 IsLeader(l, t) :- CountMatchingP1bs(c, l, t), quorum(size), c >= size, id(i), ballot(num, l, t), MaxP1bBallot(maxId1, maxNum1, l, t), ballotGeq(i, num, maxId1, maxNum1), MaxP2bBallot(maxId2, maxNum2, l, t), ballotGeq(i, num, maxId2, maxNum2)
-# TODO: send new ballot when quorum met with p1b but we're not leader?
-# only resend p1a if we're not leader AND timeout counter reaches some magic number
-NewBallot(newNum, l, t) :- id(i), ballot(num, l, t), ¬IsLeader(l, t), timeoutCounter(counter, l, t), counter == id, newNum = num + 1 
+
+# send heartbeat if we're the leader
+iAmLeader(t', proposerID, t') :- IsLeader(l, t), proposers(proposerID), id(self), self != proposerID, choose(_, t')
+LatestIAmLeader(max<arrivalTime>, l, t) :- iAmLeader(arrivalTime, l, t)
+LeaderExpired(l, t) :- LatestIAmLeader(arrivalTime, l, t), leaderTimeout(timeout), t - arrivalTime > timeout
+
+# only resend p1a if we received a quorum of p1bs AND we're not leader AND we waited a random amount of time (timeout) AND leader heartbeat timed out
+NewBallot(newNum, l, t) :- CountGeqP1bs(c, l, t), quorum(size), c >= size, id(i), ballot(num, l, t), ¬IsLeader(l, t), timeout(l, t), LeaderExpired(l, t), newNum = num + 1 
 p1a(i, num, a, t') :- id(i), NewBallot(num, l, t), acceptors(a), choice(_, t')
 ballot(num, l, t') :- NewBallot(num, l, t), succ(t, t')
 ballot(num, l, t') :- ballot(num, l, t), ¬NewBallot(newNum, l, t), succ(t, t')
-# increment timeout counter
-timeoutCounter(nextNum, l, t') :- timeoutCounter(num, l, t), timeout(tout), nextNum = (num + 1) % tout, succ(t, t')
+# send timeout message with unknown arrival time
+timeout(l, t') :- timeout(l, t), choose(_, t')
 ######################## end stable leader election 
 
 
 
 ######################## reconcile p1b log with local log
 RelevantP1bLogs(acceptorID, payload, slot, payloadBallotID, payloadBallotNum, l, t) :- p1bLog(acceptorID, payload, slot, payloadBallotID, payloadBallotNum, i, num, l, t), id(i), ballot(num, l, t)
-RelevantP1bs(acceptorID, logSize, l, t) :- p1b(acceptorID, logSize, i, num, l, t), id(i), ballot(num, l, t)
 
 # cannot send new p2as until all p1b acceptor logs are PROCESSED; otherwise might miss pre-existing entry
 P1bLogFromAcceptor(acceptorID, count<slot>, l, t) :- RelevantP1bLogs(acceptorID, _, slot, _, _, l, t)
