@@ -4,6 +4,8 @@ Experimenting with implementing things in bud.
 ### Installation
 Follow the installation guide [here](https://github.com/bloom-lang/bud/blob/master/docs/getstarted.md). That repository also contains docs on bud syntax, like this [useful cheatsheet](https://github.com/bloom-lang/bud/blob/master/docs/cheat.md).
 
+A good syntax highlighter for Dedalus code within the .\dedalus-paxos directory is the [Souffle extension](https://marketplace.visualstudio.com/items?itemName=W4RH4WK.souffle-syntax), which was designed for Datalog.
+
 ### Running Paxos or Compartmentalized Paxos
 The code should be run in this order: acceptors, proposers, then clients, each in a separate shell window. To change the number of acceptors, proposers, etc, modify the constants at the bottom of the `paxos_protocol.rb` file. Bloom modules that take in these numbers as parameters don't fare well with budplot; don't ask why. Therefore they're hardcoded.
 
