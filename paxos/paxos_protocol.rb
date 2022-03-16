@@ -9,6 +9,7 @@ module PaxosProtocol
     channel :p1b_log, [:@addr, :acceptor, :slot, :payload, :payload_id, :payload_ballot_num, :id, :ballot_num]
     channel :p2a, [:@addr, :proposer, :id, :ballot_num, :payload, :slot]
     channel :p2b, [:@addr, :acceptor, :id, :ballot_num, :payload, :slot]
+    channel :i_am_leader, [:@addr, :dummy]
 
     # proposer
     table :payloads, [:payload] # all client payloads ever received
@@ -18,12 +19,17 @@ module PaxosProtocol
 
     table :dummy_table # used to insert default values into scratches
     table :acceptors, [:addr]
+    table :proposer_peers, [:addr]
     table :id_table, [:id] # store @id, useful for joining
     table :ballot_table, [:num] # stores all seen ballots
-    periodic :timeout_counter, 0.5
+    periodic :timeout_counter, 1
     scratch :new_ballot, [:num]
     scratch :leader_table, [:bool]
     scratch :current_ballot, [:num] # deletion doesn't work as expected, so we're working around deleting ballots by calculating the max
+    table :heartbeats_received, [:time] # all the i_am_leader messages received
+    scratch :latest_heartbeat, [:time]
+    scratch :leader_expired, [:bool]
+
     scratch :matching_p1bs, [:acceptor]
     scratch :count_matching_p1bs, [:num]
     scratch :count_matching_p1bs_def, [:num] # _def = default. Since the count is based on aggregation, nothing is generated if the aggregated table is empty, but we still need a default count (0)
@@ -77,4 +83,5 @@ module PaxosProtocol
   PROPOSER_START_PORT = 15000
   ACCEPTOR_START_PORT = 16000
   DELIMITER = "|"
+  LEADER_TIMEOUT = 10 # 10 timesteps without hearing "I am leader" = leader is dead
 end

@@ -6,10 +6,18 @@ module PaxosProposerModule
       acceptors <= [[acceptor_addr]]
       connect <~ [[acceptor_addr, ip_port, @id, "proposer"]]
     end
+    # connect to proposers
+    for i in 1..PaxosProtocol::NUM_PROPOSERS
+      next if i == @id # don't connect to self
+      proposer_addr = "#{PaxosProtocol::LOCALHOST}:#{(PaxosProtocol::PROPOSER_START_PORT + i).to_s}"
+      proposer_peers <= [[proposer_addr]]
+      connect <~ [[proposer_addr, ip_port, @id, "proposer"]]
+    end
     ballot_table <= [[1]]
     leader_table <= [[false]]
     id_table <= [[@id]]
     dummy_table <= [[true]]
+    heartbeats_received <= [[0]]
   end
 
   bloom do
@@ -38,9 +46,15 @@ module PaxosProposerModule
       [c.num >= quorum && ballot_geq(id.id, ballot.num, p1b_max.id, p1b_max.num) && ballot_geq(id.id, ballot.num, p2b_max.id, p2b_max.num)]
     end
 
-    # only resend p1a if we're not leader AND timeout counter reaches some magic number
-    new_ballot <= (leader_table * id_table * current_ballot * timeout_counter).combos do |is_leader, id, ballot, timer|
-      [ballot.num + 1] if !is_leader.bool && timer.val.sec == id.id # assumes id is < 60
+    # send heartbeat if we're the leader
+    i_am_leader <~ (leader_table * proposer_peers).pairs { |is_leader, proposer| [proposer.addr, "hi"] if is_leader.bool }
+    heartbeats_received <= i_am_leader { |incoming| [budtime] }
+    latest_heartbeat <= heartbeats_received.group([], max(:time))
+    leader_expired <= latest_heartbeat { |t| [budtime - t.time > LEADER_TIMEOUT] }
+
+    # only resend p1a if we're not leader AND heartbeats expired AND timeout counter reaches some magic number
+    new_ballot <= (leader_table * id_table * current_ballot * leader_expired * timeout_counter).combos do |is_leader, id, ballot, expired, timer|
+      [ballot.num + 1] if !is_leader.bool && expired.bool && timer.val.sec == id.id # assumes id is < 60
     end
     p1a <~ (new_ballot * id_table * acceptors).combos do |ballot, id, a|
       [a.addr, ip_port, id.id, ballot.num]
