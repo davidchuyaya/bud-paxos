@@ -40,7 +40,7 @@ module PaxosAcceptorModule
     ######################## reply to p2a
     acceptor_ballot_table <= p2a { |incoming| [incoming.id, incoming.ballot_num] }
     log <= (p2a * max_acceptor_ballot).pairs do |incoming, ballot|
-      [incoming.slot, incoming.id, incoming.ballot_num, incoming.payload] if incoming.ballot_num >= ballot.num || (incoming.ballot_num == ballot.num && incoming.id >= ballot.id)
+      [incoming.slot, incoming.id, incoming.ballot_num, incoming.payload] if incoming.ballot_num > ballot.num || (incoming.ballot_num == ballot.num && incoming.id >= ballot.id)
     end 
     p2b <~ (p2a * max_acceptor_ballot).pairs do |incoming, ballot|
       [incoming.proposer, ip_port, ballot.id, ballot.num, incoming.payload, incoming.slot]
