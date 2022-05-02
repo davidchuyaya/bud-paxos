@@ -25,14 +25,7 @@ p2b(acceptorID, payload, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, l
 
 
 ballots(i, n, l, t') :- ballots(i, n, l, t), succ(t, t')
-# For each entry, only the payload with the max ballot should be kept
-LogEntryMaxBallotNum(slot, max<ballotNum>, l, t) :- log(_, slot, _, ballotNum, l, t)
-LogEntryMaxBallot(slot, max<ballotID>, ballotNum, l, t) :- LogEntryMaxBallotNum(slot, ballotNum, l, t), log(_, slot, ballotID, ballotNum, l, t)
-log(p, slot, ballotID, ballotNum, l, t') :- LogEntryMaxBallot(slot, ballotID, ballotNum, l, t), log(p, slot, ballotID, ballotNum, l, t), succ(t, t')
-# A note on correctness: It is true that by this construction, p1b does not seem guaranteed to send back only 1 payload per slot. 
-# A p2a could be processed first, inserting another item in the same slot, before the p1b is sent.
-# However, because both p1a and p2a are joined with MaxBallot (which is an aggregation, so all ballots received in this batch of incoming messages have been considered), the only way extraneous data could be inserted before the p1b reply is if the p2a's ballot = the max of this batch.
-# No p1b log sent in this case matters, then; the receiver of the p1b either has a ballot just as large (in which case, it is a p1a that arrived out of order & the response is ignored), or the receiver sent a smaller ballot (in which case the p1b is useless since it has to send a new p1a).
+log(p, slot, ballotID, ballotNum, l, t') :- log(p, slot, ballotID, ballotNum, l, t), succ(t, t')
 
 
 
@@ -43,8 +36,11 @@ MaxBallot(max<id>, num, l, t) :- MaxBallotNum(num, l, t), ballots(id, num, l, t)
 LogSize(count<slot>, l, t) :- log(_, slot, _, _, l, t)
 p1b(i, size, ballotID, ballotNum, maxBallotID, maxBallotNum, proposerID, t') :- p1a(proposerID, ballotID, ballotNum, l, t), id(i), LogSize(size, l, t), MaxBallot(maxBallotID, maxBallotNum, l, t), choice(_, t')
 
+LogEntryMaxBallotNum(slot, max<ballotNum>, l, t) :- log(_, slot, _, ballotNum, l, t)
+LogEntryMaxBallot(slot, max<ballotID>, ballotNum, l, t) :- LogEntryMaxBallotNum(slot, ballotNum, l, t), log(_, slot, ballotID, ballotNum, l, t)
+
 # send back entire log 
-p1bLog(i, payload, slot, payloadBallotID, payloadBallotNum, ballotID, ballotNum, proposerID, t') :- id(i), log(payload, slot, payloadBallotID, payloadBallotNum, l, t), p1a(proposerID, ballotID, ballotNum, l, t), choice(_, t')
+p1bLog(i, payload, slot, payloadBallotID, payloadBallotNum, ballotID, ballotNum, proposerID, t') :- id(i), log(payload, slot, payloadBallotID, payloadBallotNum, l, t), LogEntryMaxBallot(slot, payloadBallotID, payloadBallotNum, l, t), p1a(proposerID, ballotID, ballotNum, l, t), choice(_, t')
 ######################## end reply to p1a 
 
 
