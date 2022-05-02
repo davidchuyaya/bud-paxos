@@ -15,10 +15,10 @@ MaxBallotNum(num, l, t)
 MaxBallot(id, num, l, t)
 
 # copied from proposer
-p1a(proposerID, ballotID, ballotNum, l, t) # NOTE: not persisted
-p1b(acceptorID, logSize, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t)     # NOTE: logSize necessary because p1b can't send entire log back in 1 msg
+p1a(proposerID, ballotID, ballotNum, l, t) # proposerID is the location of the proposer
+p1b(acceptorID, logSize, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t) # NOTE: logSize necessary because p1b can't send entire log back in 1 msg
 p1bLog(acceptorID, payload, slot, payloadBallotID, payloadBallotNum, ballotID, ballotNum, l, t)
-p2a(proposerID, payload, slot, ballotID, ballotNum, l, t)
+p2a(proposerID, payload, slot, ballotID, ballotNum, l, t) # proposerID is the location of the proposer
 p2b(acceptorID, payload, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t)
 ######################## end relation definitions
 
