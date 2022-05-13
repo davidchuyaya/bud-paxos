@@ -79,7 +79,7 @@ iAmLeader(arrivalTime, l, t') :- iAmLeader(arrivalTime, l, t), succ(t, t')
 RelevantP1bs(acceptorID, logSize, l, t) :- p1b(acceptorID, logSize, i, num, _, _, l, t), id(i), ballot(num, l, t)
 # NOTE: Start modified
 CountMatchingP1bs(p, count<acceptorID>, l, t) :- RelevantP1bs(acceptorID, logSize, l, t), acceptorPartition(acceptorID, p)
-CountMatchingP1bsPartitions(p, l, t) :- CountMatchingP1bs(p, c, l, t), quorum(size), c >= size
+CountMatchingP1bsPartitions(count<p>, l, t) :- CountMatchingP1bs(p, c, l, t), quorum(size), c >= size
 # NOTE: End modified
 receivedBallots(maxBallotID, maxBallotNum, l, t) :- p1b(_, _, _, _, maxBallotID, maxBallotNum, l, t)
 receivedBallots(maxBallotID, maxBallotNum, l, t) :- p2b(_, _, _, _, _, maxBallotID, maxBallotNum, l, t)
@@ -133,7 +133,9 @@ P1bLargestEntryBallot(slot, max<payloadBallotID>, payloadBallotNum, l, t) :- P1b
 # makes sure that p2as cannot be sent yet; otherwise resent slots might conflict. Once p2as can be sent, a new p1b log might tell us to propose a payload for the same slot we propose (in parallel) for p2a, which violates an invariant.
 ResentEntries(payload, slot, l, t) :- P1bLargestEntryBallot(slot, payloadBallotID, payloadBallotNum, l, t), P1bMatchingEntry(payload, slot, _, payloadBallotID, payloadBallotNum, l, t), IsLeader(l, t), P1bSlotReceived(slot, c, l, t), quorum(size), c >= size, ¬proposedLog(_, slot, l, t), ¬canSendP2a(l, t)
 proposedLog(payload, slot, l, t') :- ResentEntries(payload, slot, l, t), succ(t, t') # must be succ because proposedLog is negated in ResentEntries
-p2a(i, payload, slot, i, num, a, t') :- ResentEntries(payload, slot, l, t), id(i), ballot(num, l, t), acceptors(a), choose(_, t')
+# NOTE: Start modified
+p2a(i, payload, slot, i, num, a, t') :- ResentEntries(payload, slot, l, t), id(i), ballot(num, l, t), acceptors(a), choose(_, t'), slotPartition(slot, p), acceptorPartition(a, p)
+# NOTE: End modified
 # only persist proposedLog if we're the leader. This way, when we lose election, the proposals are refreshed based on p1bs
 proposedLog(p, s, l, t') :- proposedLog(p, s, l, t), IsLeader(l, t), succ(t, t')
 ######################## end reconcile p1b log with local log

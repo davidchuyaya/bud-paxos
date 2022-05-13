@@ -30,8 +30,8 @@ LatestIAmLeader(slot, arrivalTime, l, t)
 LeaderExpired(slot, l, t)
 
 RelevantP1bLogs(acceptorID, payload, slot, payloadBallotID, payloadBallotNum, l, t) # relevant = has our ballot
-P1bLogFromAcceptor(acceptorID, c, l, t) # count of p1b entries received from each acceptor
-P1bNumAcceptorsLogReceived(c, l, t) # number of acceptors whose full p1b log has arrived
+P1bLogFromAcceptor(acceptorID, slot, c, l, t) # count of p1b entries received from each acceptor
+P1bNumAcceptorsLogReceived(slot, c, l, t) # number of acceptors whose full p1b log has arrived
 canSendP2a(slot, l, t) # true once all p1b logs have been received from acceptors who sent p1bs, reset to false once we lose leader election. Reason for persisting: reconciling p1b must happen before any new slots are chosen; new slots are only chosen when this is true, so this must be set to true THE TIMESTEP AFTER all p1bs are reconciled.
 P1bMatchingEntry(payload, slot, c, id, num, l, t) # how many p1bs have this payload for this slot num? Note that same payload & different ballot = treated as different. This is fine, since uncommitted entries will be resent to every acceptor with the same ballot.
 P1bSlotReceived(slot, c, l, t) # how many p1bs have we received for this slot? Once we hit quorum, can make decision
@@ -59,17 +59,17 @@ iAmLeader(slot, arrivalTime, l, t) # Assume starts with 0.
 p1b(a, l, s, i, n, mi, mn, l, t') :- p1b(a, l, s, i, n, mi, mn, l, t), succ(t, t')
 p1bLog(a, p, s, pi, pn, i, n, l, t') :- p1bLog(a, p, s, pi, pn, i, n, l, t), succ(t, t')
 p2b(a, p, s, i, n, mi, mn, l, t') :- p2b(a, p, s, i, n, mi, mn, l, t), succ(t, t')
-receivedBallots(i, n, l, t') :- receivedBallots(i, n, l, t), succ(t, t')
+receivedBallots(s, i, n, l, t') :- receivedBallots(s, i, n, l, t), succ(t, t')
 payloads(p, l, t) :- client_in(p, l, t)
 payloads(p, l, t') :- payloads(p, l, t), succ(t, t')
-iAmLeader(arrivalTime, l, t') :- iAmLeader(arrivalTime, l, t), succ(t, t')
+iAmLeader(s, arrivalTime, l, t') :- iAmLeader(s, arrivalTime, l, t), succ(t, t')
 
 
 ######################## stable leader election
 RelevantP1bs(acceptorID, slot, logSize, l, t) :- p1b(acceptorID, logSize, slot, i, num, _, _, l, t), id(i), ballot(slot, num, l, t)
 CountMatchingP1bs(slot, count<acceptorID>, l, t) :- RelevantP1bs(slot, acceptorID, logSize, l, t)
-receivedBallots(slot, maxBallotID, maxBallotNum, l, t) :- p1b(_, _, _, _, maxBallotID, maxBallotNum, l, t)
-receivedBallots(slot, maxBallotID, maxBallotNum, l, t) :- p2b(_, _, _, _, _, maxBallotID, maxBallotNum, l, t)
+receivedBallots(slot, maxBallotID, maxBallotNum, l, t) :- p1b(_, _, slot, _, _, maxBallotID, maxBallotNum, l, t)
+receivedBallots(slot, maxBallotID, maxBallotNum, l, t) :- p2b(_, _, slot, _, _, _, maxBallotID, maxBallotNum, l, t)
 MaxReceivedBallotNum(slot, max<num>, l, t) :- receivedBallots(slot, _, num, l, t)
 MaxReceivedBallot(slot, max<id>, num, l, t) :- MaxReceivedBallotNum(slot, num, l, t), receivedBallots(slot, id, num, l, t)
 IsLeader(slot, l, t) :- CountMatchingP1bs(slot, c, l, t), quorum(size), c >= size, id(i), ballot(slot, num, l, t), MaxReceivedBallot(slot, maxId, maxNum, l, t), ballotGeq(i, num, maxId, maxNum)
