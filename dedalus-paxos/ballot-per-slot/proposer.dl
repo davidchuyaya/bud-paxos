@@ -50,7 +50,7 @@ p1b(acceptorID, logSize, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, l
 p1bLog(acceptorID, payload, slot, payloadBallotID, payloadBallotNum, ballotID, ballotNum, l, t)
 p2a(proposerID, payload, slot, ballotID, ballotNum, l, t) # proposerID is the location of the proposer
 p2b(acceptorID, payload, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t)
-timeout(l, t) # Assume starts with a fact. async channel that tells us when to resend p1a
+timeout(slot, l, t) # Assume starts with a fact. async channel that tells us when to resend p1a
 iAmLeader(slot, arrivalTime, l, t) # Assume starts with 0.
 ######################## end relation definitions
 
