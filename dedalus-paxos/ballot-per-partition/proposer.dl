@@ -37,7 +37,6 @@ P1bLogFromAcceptor(acceptorID, c, l, t) # count of p1b entries received from eac
 P1bNumAcceptorsLogReceived(partition, c, l, t) # number of acceptors whose full p1b log has arrived
 canSendP2a(partition, l, t) # true once all p1b logs have been received from acceptors who sent p1bs, reset to false once we lose leader election. Reason for persisting: reconciling p1b must happen before any new slots are chosen; new slots are only chosen when this is true, so this must be set to true THE TIMESTEP AFTER all p1bs are reconciled.
 P1bMatchingEntry(payload, slot, c, id, num, l, t) # how many p1bs have this payload for this slot num? Note that same payload & different ballot = treated as different. This is fine, since uncommitted entries will be resent to every acceptor with the same ballot. NOTE: partition column optional
-P1bSlotReceived(slot, c, l, t) # how many p1bs have we received for this slot? Once we hit quorum, can make decision. NOTE: partition column optional
 P1bLargestEntryBallotNum(slot, num, l, t) # NOTE: partition column optional
 P1bLargestEntryBallot(slot, id, num, l, t) # largest ballot per slot in p1bs. NOTE: partition column optional
 P1bResentEntries(payload, slot, l, t) # entries to resend p2as for, based on uncommitted entries in p1b. NOTE: partition column optional
@@ -110,12 +109,11 @@ P1bMatchingEntry(payload, slot, count<acceptorID>, payloadBallotID, payloadBallo
 proposedLog(payload, slot, l, t) :- P1bMatchingEntry(payload, slot, c, _, _, l, t), quorum(size), c >= size
 
 # what was not committed = find max ballot, store in local log, resend 
-P1bSlotReceived(slot, count<acceptorID>, l, t) :- RelevantP1bLogs(acceptorID, _, slot, _, _, l, t)
 P1bLargestEntryBallotNum(slot, max<payloadBallotNum>, l, t) :- RelevantP1bLogs(_, _, slot, _, payloadBallotNum, l, t)
 P1bLargestEntryBallot(slot, max<payloadBallotID>, payloadBallotNum, l, t) :- P1bLargestEntryBallotNum(slot, payloadBallotNum, l, t), RelevantP1bLogs(_, _, slot, payloadBallotID, payloadBallotNum, l, t)
 # does not explicitly avoid resending committed entries, since proposedLog is negated, which means that committed entries (which are written to proposedLog in the same timestep) must be in an earlier strata and are implicitly avoided
 # makes sure that p2as cannot be sent yet; otherwise resent slots might conflict. Once p2as can be sent, a new p1b log might tell us to propose a payload for the same slot we propose (in parallel) for p2a, which violates an invariant.
-ResentEntries(payload, slot, l, t) :- P1bLargestEntryBallot(slot, payloadBallotID, payloadBallotNum, l, t), P1bMatchingEntry(payload, slot, _, payloadBallotID, payloadBallotNum, l, t), IsLeader(p, l, t), P1bSlotReceived(slot, c, l, t), quorum(size), c >= size, ¬proposedLog(_, slot, l, t), ¬canSendP2a(p, l, t), slotPartition(slot, p) # IMPORTANT: Only IsLeader and canSendP2a use partition columns. Investigate why?
+ResentEntries(payload, slot, l, t) :- P1bLargestEntryBallot(slot, payloadBallotID, payloadBallotNum, l, t), P1bMatchingEntry(payload, slot, _, payloadBallotID, payloadBallotNum, l, t), IsLeader(p, l, t), P1bNumAcceptorsLogReceived(p, c, l, t), quorum(size), c >= size, ¬proposedLog(_, slot, l, t), ¬canSendP2a(p, l, t), slotPartition(slot, p) # IMPORTANT: Only IsLeader and canSendP2a use partition columns. Investigate why?
 proposedLog(payload, slot, l, t') :- ResentEntries(payload, slot, l, t), succ(t, t') # must be succ because proposedLog is negated in ResentEntries
 p2a(i, payload, slot, i, num, a, t') :- ResentEntries(payload, slot, l, t), id(i), ballot(p, num, l, t), acceptors(a), choose(_, t'), slotPartition(slot, p), acceptorPartition(a, p) # IMPORTANT: Both slotPartition and acceptorPartition are necessary here. Investigate why.
 # only persist proposedLog if we're the leader. This way, when we lose election, the proposals are refreshed based on p1bs
@@ -127,8 +125,8 @@ proposedLog(p, s, l, t') :- proposedLog(p, s, l, t), IsLeader(partition, l, t), 
 ######################## send p2as 
 # assign a slot
 MinLogHole(p, min<slot>, l, t) :- ¬proposedLog(_, slot, l, t), nat(slot), slotPartition(slot, p)
-ChosenPayload(p, choose<payload>, l, t) :- payloads(payload, l, t), ¬proposedLog(payload, _, l, t), canSendP2a(p, l, t) # IMPORTANT: Neither payloads nor proposedLog can map to partitions. Choose risks assigning 1 payload to 2 partitions. 
-p2a(i, payload, slot, i, num, a, t') :- ChosenPayload(p, payload, l, t), MinLogHole(p, slot, l, t), id(i), ballot(p, num, l, t), acceptors(a), choose(_, t'), slotPartition(slot, p), acceptorPartition(a, p)
+ChosenPayload(choose<payload>, l, t) :- payloads(payload, l, t), ¬proposedLog(payload, _, l, t)
+p2a(i, payload, slot, i, num, a, t') :- ChosenPayload(p, payload, l, t), MinLogHole(p, slot, l, t), id(i), ballot(p, num, l, t), acceptors(a), choose(_, t'), slotPartition(slot, p), acceptorPartition(a, p), canSendP2a(p, l, t)
 proposedLog(payload, slot, l, t') :- ChosenPayload(p, payload, l, t), MinLogHole(p, slot, l, t), succ(t, t') # IMPORTANT: Neither slotPartition nor acceptorPartition are necessary here. Investigate why.
 ######################## end send p2as 
 

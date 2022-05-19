@@ -6,7 +6,7 @@ id(id)
 ballotGeq(id1, num1, id2, num2) # true if num1 >= num2 or (num1 = num2 and id1 >= id2)
 
 # IDB
-ballots(id, num, l, t) # Assumes starts with 0,0
+ballots(id, num, l, t) 
 log(payload, slot, ballotID, ballotNum, l, t)
 LogSize(size, l, t)
 LogEntryMaxBallotNum(slot, ballotNum, l, t)
@@ -36,6 +36,7 @@ MaxBallot(max<id>, num, l, t) :- MaxBallotNum(num, l, t), ballots(id, num, l, t)
 LogSize(count<slot>, l, t) :- log(_, slot, _, _, l, t)
 p1b(i, size, ballotID, ballotNum, maxBallotID, maxBallotNum, proposerID, t') :- p1a(proposerID, ballotID, ballotNum, l, t), id(i), LogSize(size, l, t), MaxBallot(maxBallotID, maxBallotNum, l, t), choice(_, t')
 
+# NOTE: Can be pushed to proposer in Paxos made moderately complex
 LogEntryMaxBallotNum(slot, max<ballotNum>, l, t) :- log(_, slot, _, ballotNum, l, t)
 LogEntryMaxBallot(slot, max<ballotID>, ballotNum, l, t) :- LogEntryMaxBallotNum(slot, ballotNum, l, t), log(_, slot, ballotID, ballotNum, l, t)
 
@@ -46,8 +47,8 @@ p1bLog(i, payload, slot, payloadBallotID, payloadBallotNum, ballotID, ballotNum,
 
 
 ######################## reply to p2a
-ballots(id, num, l, t) :- p2a(_, _, _, id, num, l, t) 
+ballots(id, num, l, t) :- p2a(_, _, _, id, num, l, t) # NOTE: unnecessary
 # Any rule that uses MaxBallot is guaranteed to only run once all ballots have been processed
-log(payload, slot, ballotID, ballotNum, l, t) :- p2a(_, payload, slot, ballotID, ballotNum, l, t), MaxBallot(maxID, maxNum, l, t), ballotGeq(ballotID, ballotNum, maxID, maxNum)
+log(payload, slot, ballotID, ballotNum, l, t) :- p2a(_, payload, slot, ballotID, ballotNum, l, t), MaxBallot(maxID, maxNum, l, t), ballotGeq(ballotID, ballotNum, maxID, maxNum) # NOTE: Can just use equal
 p2b(i, payload, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, proposerID, t') :- p2a(proposerID, payload, slot, ballotID, ballotNum, l, t), id(i), MaxBallot(maxBallotID, maxBallotNum, l, t), choice(_, t')
 ######################## end reply to p2a
