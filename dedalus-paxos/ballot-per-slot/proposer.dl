@@ -82,7 +82,7 @@ NewBallot(slot, newNum, l, t) :- MaxReceivedBallot(slot, maxId, maxNum, l, t), i
 # Start sending p1a at beginning of program
 NewBallot(slot, num, l, t) :- MinLogHole(slot, l, t), ¬receivedBallots(slot, _, _, l, t), initBallot(num), timeout(slot, l, t)
 
-p1a(i, slot, i, num, a, t') :- id(i), NewBallot(slot, num, l, t), acceptors(a), choice(_, t')
+p1a(i, slot, i, num, a, t') :- id(i), NewBallot(slot, num, l, t), acceptors(a), choose(_, t')
 ballot(slot, num, l, t') :- NewBallot(slot, num, l, t), succ(t, t')
 ballot(slot, num, l, t') :- ballot(slot, num, l, t), ¬NewBallot(slot, newNum, l, t), succ(t, t')
 # send timeout message with unknown arrival time

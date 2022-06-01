@@ -1,0 +1,16 @@
+######################## relation definitions
+# EDB
+self(s)
+replicas(r)
+nat(n) # all natural numbers
+
+# IDB
+client_in(sender, l, t)
+client_out(lockholder, l, t)
+replica_in(main, sender, l, t)
+replica_out(lockholder, sender, l, t)
+######################## end relation definitions
+
+
+replica_in(s, lockholder, r, t') :- client_in(lockholder, l, t), replicas(r), self(s), choose(_, t')
+client_out(lockholder, sender, t') :- replica_out(lockholder, sender, l, t), choose(_, t')

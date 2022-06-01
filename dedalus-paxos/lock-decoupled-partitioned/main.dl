@@ -1,0 +1,19 @@
+######################## relation definitions
+# EDB
+self(s)
+replicas(r)
+senderToPartition(s, p)
+replicaToPartiton(r, p)
+nat(n) # all natural numbers
+
+# IDB
+client_in(sender, l, t)
+client_out(lockholder, l, t)
+replica_in(main, sender, l, t)
+replica_out(lockholder, sender, l, t)
+######################## end relation definitions
+
+
+# NOTE: This protocol is broken; multiple senders can win the lock on multiple partitions. This mirrors Compartmentalized Paxos where there can be a leader per partition.
+replica_in(s, lockholder, r, t') :- client_in(lockholder, l, t), replicas(r), self(s), choose(_, t'), senderToPartition(lockholder, p), replicaToPartiton(r, p)
+client_out(lockholder, sender, t') :- replica_out(lockholder, sender, l, t), choose(_, t')

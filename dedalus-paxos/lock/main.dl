@@ -1,0 +1,26 @@
+######################## relation definitions
+# IDB
+client_in(sender, l, t)
+client_out(payload, l, t)
+
+register(payload, l, t)
+Next(payload, l, t)
+######################## end relation definitions
+
+
+# select a random value to save, if there are concurrent ones
+Next(choose<payload>, l, t) :- client_in(payload, l, t), ¬register(_, l, t)
+Next(payload, l, t) :- register(payload, l, t)
+register(payload, l, t') :- Next(payload, l, t), succ(t, t')
+# return the new/current payload
+client_out(payload, sender, t') :- client_in(sender, l, t), Next(payload, l, t), choose(_, t')
+
+
+# When we can apply partitioning/replication
+# 1. The partitioned/replicated component is not directly reading from the client
+
+# How we apply partitioning/replication
+# 1. Find columns sent/received from the client (payload)
+# 2. If a table contains those columns, do not modify
+# 3. If a table does not, add a "replicate" column
+# 3. 

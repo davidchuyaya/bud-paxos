@@ -1,0 +1,16 @@
+######################## relation definitions
+# IDB
+replica_in(main, sender, l, t)
+replica_out(lockholder, l, t)
+
+register(lockholder, l, t)
+Next(lockholder, l, t)
+######################## end relation definitions
+
+
+# select a random value to save, if there are concurrent ones
+Next(choose<lockholder>, l, t) :- replica_in(_, lockholder, l, t), ¬register(_, l, t)
+Next(lockholder, l, t) :- register(lockholder, l, t)
+register(lockholder, l, t') :- Next(lockholder, l, t), succ(t, t')
+# return the new/current lockholder
+replica_out(lockholder, sender, main, t') :- replica_in(main, sender, l, t), Next(lockholder, l, t), choose(_, t')

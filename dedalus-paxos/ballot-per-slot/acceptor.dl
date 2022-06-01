@@ -32,13 +32,13 @@ log(p, slot, ballotID, ballotNum, l, t') :- log(p, slot, ballotID, ballotNum, l,
 ballots(slot, id, num, l, t) :- p1a(_, slot, id, num, l, t)
 MaxBallotNum(slot, max<num>, l, t) :- ballots(slot, _, num, l, t) 
 MaxBallot(slot, max<id>, num, l, t) :- MaxBallotNum(slot, num, l, t), ballots(slot, id, num, l, t)
-p1b(i, 1, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, proposerID, t') :- p1a(proposerID, ballotID, ballotNum, l, t), log(_, slot, _, _, l, t), id(i), MaxBallot(slot, maxBallotID, maxBallotNum, l, t), choice(_, t')
-p1b(i, 0, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, proposerID, t') :- p1a(proposerID, ballotID, ballotNum, l, t), ¬log(_, slot, _, _, l, t), id(i), MaxBallot(slot, maxBallotID, maxBallotNum, l, t), choice(_, t')
+p1b(i, 1, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, proposerID, t') :- p1a(proposerID, ballotID, ballotNum, l, t), log(_, slot, _, _, l, t), id(i), MaxBallot(slot, maxBallotID, maxBallotNum, l, t), choose(_, t')
+p1b(i, 0, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, proposerID, t') :- p1a(proposerID, ballotID, ballotNum, l, t), ¬log(_, slot, _, _, l, t), id(i), MaxBallot(slot, maxBallotID, maxBallotNum, l, t), choose(_, t')
 
 LogEntryMaxBallotNum(slot, max<ballotNum>, l, t) :- log(_, slot, _, ballotNum, l, t)
 LogEntryMaxBallot(slot, max<ballotID>, ballotNum, l, t) :- LogEntryMaxBallotNum(slot, ballotNum, l, t), log(_, slot, ballotID, ballotNum, l, t)
 
-p1bLog(i, payload, slot, payloadBallotID, payloadBallotNum, ballotID, ballotNum, proposerID, t') :- id(i), log(payload, slot, payloadBallotID, payloadBallotNum, l, t), LogEntryMaxBallot(slot, payloadBallotID, payloadBallotNum, l, t), p1a(proposerID, slot, ballotID, ballotNum, l, t), choice(_, t')
+p1bLog(i, payload, slot, payloadBallotID, payloadBallotNum, ballotID, ballotNum, proposerID, t') :- id(i), log(payload, slot, payloadBallotID, payloadBallotNum, l, t), LogEntryMaxBallot(slot, payloadBallotID, payloadBallotNum, l, t), p1a(proposerID, slot, ballotID, ballotNum, l, t), choose(_, t')
 ######################## end reply to p1a 
 
 
@@ -47,5 +47,5 @@ p1bLog(i, payload, slot, payloadBallotID, payloadBallotNum, ballotID, ballotNum,
 ballots(slot, id, num, l, t) :- p2a(_, _, slot, id, num, l, t) 
 # Any rule that uses MaxBallot is guaranteed to only run once all ballots have been processed
 log(payload, slot, ballotID, ballotNum, l, t) :- p2a(_, payload, slot, ballotID, ballotNum, l, t), MaxBallot(slot, maxID, maxNum, l, t), ballotGeq(ballotID, ballotNum, maxID, maxNum)
-p2b(i, payload, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, proposerID, t') :- p2a(proposerID, payload, slot, ballotID, ballotNum, l, t), id(i), MaxBallot(slot, maxBallotID, maxBallotNum, l, t), choice(_, t')
+p2b(i, payload, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, proposerID, t') :- p2a(proposerID, payload, slot, ballotID, ballotNum, l, t), id(i), MaxBallot(slot, maxBallotID, maxBallotNum, l, t), choose(_, t')
 ######################## end reply to p2a
