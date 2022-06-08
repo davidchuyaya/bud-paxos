@@ -1,0 +1,34 @@
+# acceptor
+
+######################## relation definitions
+# EDB
+ballotGeq(id1, num1, id2, num2) # true if num1 >= num2 or (num1 = num2 and id1 >= id2)
+decoupledAcceptors(a)
+
+# IDB
+ballots(id, num, l, t) 
+MaxBallotNum(num, l, t)
+MaxBallot(id, num, l, t)
+
+# copied from proposer
+p1a(proposerID, ballotID, ballotNum, l, t) # proposerID is the location of the proposer
+p1b(acceptorID, logSize, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t) # NOTE: logSize necessary because p1b can't send entire log back in 1 msg
+p1bLog(acceptorID, payload, slot, payloadBallotID, payloadBallotNum, ballotID, ballotNum, l, t)
+p2a(proposerID, payload, slot, ballotID, ballotNum, l, t) # proposerID is the location of the proposer
+p2b(acceptorID, payload, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t)
+
+decoupledP1a(et, proposerID, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t) # et = event timestamp
+######################## end relation definitions
+
+
+
+ballots(i, n, l, t') :- ballots(i, n, l, t), succ(t, t')
+
+
+
+######################## reply to p1a 
+ballots(id, num, l, t) :- p1a(_, id, num, l, t)
+MaxBallotNum(max<num>, l, t) :- ballots(_, num, l, t) 
+MaxBallot(max<id>, num, l, t) :- MaxBallotNum(num, l, t), ballots(id, num, l, t)
+decoupledP1a(t, proposerID, id, num, maxBallotID, maxBallotNum, decoupled, t') :- p1a(proposerID, id, num, l, t), MaxBallot(maxBallotID, maxBallotNum, l, t), decoupledAcceptors(decoupled), choose(_, t')
+######################## end reply to p1a 

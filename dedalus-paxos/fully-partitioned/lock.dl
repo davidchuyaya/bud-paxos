@@ -1,0 +1,23 @@
+######################## relation definitions
+# EDB
+true(t)
+false(f)
+
+# IDB
+client_in(sender, l, t)
+client_out(gotLock, l, t)
+
+register(l, t)
+Next(payloa, l, t)
+######################## end relation definitions
+
+
+# select a random sender to win the lock, if there are concurrent ones
+Next(choose<sender>, l, t) :- client_in(sender, l, t), ¬register(l, t)
+register(l, t') :- Next(_, l, t), succ(t, t')
+register(l, t') :- register(l, t), succ(t, t')
+# return the new lockholder
+client_out(t, sender, t') :- client_in(sender, l, t), Next(sender, l, t), true(t), choose(_, t')
+client_out(f, sender, t') :- client_in(sender, l, t), ¬Next(sender, l, t), false(f), choose(_, t')
+
+# Invariants: only 1 client will ever receive a client_out message with "true"
