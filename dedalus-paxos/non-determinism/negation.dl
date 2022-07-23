@@ -1,0 +1,18 @@
+nat(n) # can be any arbitrary collection of finite/infinite values?
+cycle(n, l, t)
+client_in(client, payload, l, t)
+client_out(payload, num, l, t)
+
+
+# Recursion excluding current state. Still replicable because client doesn't know how much time elapsed.
+# Seems negation on non-persisted values is fine.
+cycle(choose<n>, l, t') :- nat(n), ¬cycle(n, l, t)
+client_out(payload, n, client, t') :- client_in(client, payload, l, t), cycle(n, l, t), choose(_, t')
+
+
+
+# 1. Recursion excluding all previous state. Not replicable, because some states will never be reached again.
+prev(n, l, t') :- prev(n, l, t), succ(t, t')
+prev(n, l, t) :- cycle(n, l, t)
+cycle(choose<n>, l, t) :- nat(n), ¬prev(n, l, t) # Can optionally set succ for cycle instead
+

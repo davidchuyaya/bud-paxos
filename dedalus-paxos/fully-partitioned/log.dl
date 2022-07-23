@@ -18,25 +18,21 @@ MinHole(min<num>, l, t) :- ¬log(_, num, l, t), nat(num)
 ChosenPayload(choose<sender, val>, l, t) :- client_cache(sender, val, l, t), ¬log(val, _, l, t)
 
 # put proposal in slot and return info to sender
-log(val, num, l, t) :- ChosenPayload(sender, val, l, t), MinHole(num, l, t)
+log(val, num, l, t) :- ChosenPayload(_, val, l, t), MinHole(num, l, t)
 client_out(val, num, sender, t) :- log(val, num, l, t), ChosenPayload(sender, val, l, t), choose(_, t')
 
 
-# Partitioning Rule: 
-#    Hypothesis for equivalence constraints:
-#    Random input partitioning: works if each input record is "independent" in the codeblock.
-#        NOTE: this does NOT apply because join of client_cache with ¬log in line 18!
-#    Co-partition input partitioning: works if each input record is partitioned according to (by a function coarser than) their co-partition dependencies
-#    Union output partitioning: works if each output record is "independent"
-partitions(p)
-# 1. HOW/WHAT TO PARTITION (INTERNAL)
-# add partition to all internal state
-set(p, val, l, t)
-# add partition to all rules
-set(p, val, l, t') :- set(p, val, l, t), succ(t, t')
 
-# 2. HOW TO PARTITION INPUT: random
-set(choose<p>, val, l, t) :- client_in(_, val, l, t), partitions(p)
-# 3. HOW TO COLLECT OUTPUT: union
-client_out(val, sender, t) :- set(p, val, l, t), client_in(sender, val, l, t), choose(_, t')
+########### Alternative to janky "queue"
+ChosenPayload(choose<sender, val>, l, t) :- client_cache(sender, val, l, t)
+client_cache(sender, val, l, t') :- client_cache(sender, val, l, t), ¬ChosenPayload(sender, val, l, t), succ(t, t')
 
+########### Alternative to separate "numbers used" from payloads
+usedSlots(num, l, t)
+usedSlots(num, l, t) :- MinHole(num, l, t), ChosenPayload(_, _, l, t) # Client input is a "trigger" that a slot has been used
+MinHole(min<num>, l, t) :- ¬usedSlots(num, l, t), nat(num)
+
+
+########### In both alternatives, negation is unavoidable.
+# Queue: Shifted negation from log to client_cache. Still recursive wrt ChosenPayload (it chooses what has not been chosen before)
+# Separating MinHole from log: usedSlots acts like log with just the numbers column. Still influenced (triggered) by clieint input. Value write turned into "trigger" because client input is not important (not joined).

@@ -1,6 +1,6 @@
 ######################## relation definitions
 # EDB
-true(t)
+true(tr)
 false(f)
 
 # IDB
@@ -8,7 +8,7 @@ client_in(sender, l, t)
 client_out(gotLock, l, t)
 
 register(l, t)
-Next(payloa, l, t)
+Next(sender, l, t)
 ######################## end relation definitions
 
 
@@ -21,3 +21,21 @@ client_out(t, sender, t') :- client_in(sender, l, t), Next(sender, l, t), true(t
 client_out(f, sender, t') :- client_in(sender, l, t), ¬Next(sender, l, t), false(f), choose(_, t')
 
 # Invariants: only 1 client will ever receive a client_out message with "true"
+
+# Need to somehow prevent partitioning.
+
+# Idea 1
+# Only Next stores client payload. "Choose" seems to prevent partitioning. But Paxos/log both use "choose"?
+# What if Next didn't use "choose"? Then partitioning (and multiple senders receiving "true") is indistinguishable from batching, except if:
+# 1. The client sends another message, expecting "false". If partitioning is done per-client this is fine?
+# 2. Partitions entangle their local time in the response. All messages in the large batch must have the same time, but not messages from partitions
+
+# Idea 2
+# Append a column and track data dependencies through that?
+
+Next(choose<sender>, l, t) :- client_in(sender, l, t), ¬register(_, l, t)
+register(tr, l, t') :- Next(_, l, t), true(tr), succ(t, t')
+register(tr, l, t') :- register(tr, l, t), succ(t, t')
+# return the new lockholder
+client_out(t, sender, t') :- client_in(sender, l, t), Next(sender, l, t), true(t), choose(_, t')
+client_out(f, sender, t') :- client_in(sender, l, t), ¬Next(sender, l, t), false(f), choose(_, t')

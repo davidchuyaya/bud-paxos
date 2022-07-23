@@ -1,0 +1,43 @@
+nat(n)
+add(a, b, c)
+mod(a, b, c)
+
+prev(n, l, t)
+MaxPrev(n, l, t)
+ballot(n, l, t) # assume starts with 0
+cycle(i, l, t)
+
+client_in(client, payload, l, t)
+client_out(payload, num, l, t)
+
+
+
+prev(n, l, t') :- prev(n, l, t), succ(t, t')
+prev(n, l, t) :- ballot(n, l, t)
+ballot(min<i>, l, t') :- ¬prev(n, l, t), nat(n), succ(t, t')
+# smallest number not used already, mod 5. Note: no source of non-determinism; the client simply can't detect where in the cycle the system is in.
+cycle(i, l, t) :- ballot(n, l, t), mod(n, 5, i)
+client_out(payload, n, client, t') :- client_in(client, payload, l, t), cycle(n, l, t), choose(_, t')
+
+
+
+
+# 1. alternative expression of "next integer". Assumes that prev includes all previous natural numbers (no holes)
+MaxPrev(max<n>, l, t) :- prev(n, l, t)
+ballot(i, l, t') :- MaxPrev(n, l, t), add(n, 1, i), succ(t, t')
+
+
+# 2. Don't directly expose the cycle # in client_out?
+
+# Don't have a toggle predicate but still a toggle-like structure
+
+
+
+# 3. Inconsequentially-paired writes? The following is essentially p2a without quorum. The ballot is just dropped from the output?
+# Doesn't matter what ballot behavior is like, as long as uniqueness in storage isn't impacted? client_out removes duplicates with different ballots anyway tho.
+# Because we know ballots are strictly increasing, we don't need to worry about uniqueness in storage?
+storage(n, p, l, t)
+client_out(payload, l, t)
+
+storage(n, p, l, t) :- ballot(n, l, t), client_in(_, p, l, t)
+client_out(p, l, t) :- storage(n, p, l, t), client_in(_, p, l, t)

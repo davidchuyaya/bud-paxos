@@ -1,0 +1,33 @@
+rand(l, t)
+client_in(client, payload, l, t)
+client_out(payload, bool, l, t)
+
+rand(l, t') :- choose(_, l, t')
+client_out(payload, "true", client, t') :- client_in(client, payload, l, t), rand(l, t), choose(_, t')
+client_out(payload, "false", client, t') :- client_in(client, payload, l, t), ¬rand(l, t), choose(_, t')
+
+
+
+# Systematically
+# 1. Multiple sources of non-determinism, either joined in 1 rule or across multiple. Still non-deterministic
+rand(l, t') :- choose(_, l, t')
+rand2(l, t') :- choose(_, l, t')
+rand(l, t') :- rand2(l, t), choose(_, l, t')
+# 2. Non-deterministic source, persisted. Deterministic (must contain all persisted values)
+rand(l, t') :- choose(_, l, t')
+rand(l, t') :- rand(l, t), succ(t, t')
+# 3. Non-recursive successor. Non-deterministic. Seems determinism comes from recursion + successor. A cycle into the future
+rand(l, t') :- choose(_, l, t')
+rand2(l, t') :- rand(l, t), succ(t, t')
+# 4. Recursive choose, no persistence. Non-deterministic.
+rand(l, t') :- rand(l, t), choose(_, l, t')
+# 5. Negating non-deterministic source. Still non-deterministic
+rand(l, t') :- ¬choose(_, l, t')
+# 6. Negation of persistented source. Deterministic
+rand2(l, t') :- choose(_, l, t')
+rand2(l, t') :- rand2(l, t), succ(t, t')
+rand(l, t') :- ¬rand2(l, t)
+# 7. Persistent cycle with negation. Still non-deterministic (choose generates random values to interrupt the flip-flop)
+rand(l, t') :- choose(_, l, t')
+rand(l, t') :- ¬rand(l, t), succ(t, t')
+# Aggregation doesn't really make sense until we have non-boolean domains. Go to domain.dl?

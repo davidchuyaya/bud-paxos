@@ -1,0 +1,37 @@
+is_even(n)
+num(n, l, t)
+Next(n, l, t)
+client_in(client, payload, l, t)
+client_out(payload, bool, l, t)
+
+# Increment num randomly. Its domain is shrinking (rising natural numbers)
+Next(n', l, t') :- num(n, l, t), add(n, 1, n'), choose(_, l, t')
+num(n, l, t') :- num(n, l, t), succ(t, t'), ¬Next(n', l, t)
+num(n', l, t') :- Next(n', l, t), succ(t, t')
+
+# Output based on is_even. Still non-deterministic
+client_out(payload, "true", client, t') :- client_in(client, payload, l, t), num(n, l, t), is_even(n), choose(_, t')
+client_out(payload, "false", client, t') :- client_in(client, payload, l, t), num(n, l, t), ¬is_even(n), choose(_, t')
+
+# 1. Aggregation on deterministic table is still deterministic (except for choose?)
+client_out(payload, max<n>, client, t') :- client_in(client, payload, l, t), num(n, l, t), choose(_, t')
+# 2. Only 1 value possible to choose, deterministic
+client_out(payload, choose<n>, client, t') :- client_in(client, payload, l, t), num(n, l, t), choose(_, t')
+# 3. Multi-value choose, non-deterministic? Client can see any number next (even if it's "too large"). Note that there's a non-conditional persist. What if persistence was conditional?
+Next(n', l, t') :- num(n, l, t), add(n, 1, n')
+num(n, l, t') :- num(n, l, t), succ(t, t') # negation is removed, always persist
+num(n', l, t') :- Next(n', l, t), succ(t, t')
+client_out(payload, choose<n>, client, t') :- client_in(client, payload, l, t), num(n, l, t), choose(_, t')
+# 4. Multi-value choose, non-deterministic conditional persist, non-deterministic
+Next(n', l, t') :- num(n, l, t), add(n, 1, n')
+rand(l, t') :- choose(_, t')
+num(n, l, t') :- num(n, l, t), succ(t, t'), rand(l, t) # current value MIGHT persist
+num(n', l, t') :- Next(n', l, t), succ(t, t') # current value +1 will be in next timestep
+client_out(payload, choose<n>, client, t') :- client_in(client, payload, l, t), num(n, l, t), choose(_, t')
+# 5. Multi-value choose, conditional persist, deterministic. Once a number greater than 50 is seen, choose can't select anything less
+Next(n', l, t') :- num(n, l, t), add(n, 1, n'), choose(_, l, t')
+num(n, l, t') :- num(n, l, t), succ(t, t'), n < 50 # current value will only persist if < 50
+num(n', l, t') :- Next(n', l, t), succ(t, t') # current value +1 will be in next timestep
+client_out(payload, choose<n>, client, t') :- client_in(client, payload, l, t), num(n, l, t), choose(_, t')
+
+# Entanglement?
