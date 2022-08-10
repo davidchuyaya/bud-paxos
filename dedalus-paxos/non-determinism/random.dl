@@ -30,4 +30,23 @@ rand(l, t') :- ¬rand2(l, t)
 # 7. Persistent cycle with negation. Still non-deterministic (choose generates random values to interrupt the flip-flop)
 rand(l, t') :- choose(_, l, t')
 rand(l, t') :- ¬rand(l, t), succ(t, t')
+
+# Delaying non-determinism
+# 8. Delayed non-determinism. Non-deterministic. Even if client observes rand, it does not know at what time it will observe out
+rand(l, t) :- choose(_, t)
+out(l, t') :- rand(l, t), succ(t, t')
+# 9. Delayed non-determinism, client input persisted. Deterministic? Client always expects "rand" and "out" for the same payload; if it sees either, the other message is guaranteed.
+rand(l, t) :- choose(_, t)
+out(l, t') :- rand(l, t), succ(t, t')
+recv(client, payload, l, t) :- client_in(client, payload, l, t)
+client_out(payload, "rand", client, t') :- recv(client, payload, l, t), rand(l, t), choose(_, t')
+client_out(payload, "out", client, t') :- recv(client, payload, l, t), out(l, t), choose(_, t')
+# 10. Delayed non-determinism, entanglement. Clearly deterministic; the client knows exactly what "t" value to expect, given the output of one relation.
+rand(l, t) :- choose(_, t)
+out(l, t') :- rand(l, t), succ(t, t')
+recv(client, payload, l, t) :- client_in(client, payload, l, t)
+client_out(payload, "rand" + t, client, t') :- recv(client, payload, l, t), rand(l, t), choose(_, t')
+client_out(payload, "out" + t, client, t') :- recv(client, payload, l, t), out(l, t), choose(_, t')
+
+
 # Aggregation doesn't really make sense until we have non-boolean domains. Go to domain.dl?

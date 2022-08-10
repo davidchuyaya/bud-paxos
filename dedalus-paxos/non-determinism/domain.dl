@@ -34,4 +34,45 @@ num(n, l, t') :- num(n, l, t), succ(t, t'), n < 50 # current value will only per
 num(n', l, t') :- Next(n', l, t), succ(t, t') # current value +1 will be in next timestep
 client_out(payload, choose<n>, client, t') :- client_in(client, payload, l, t), num(n, l, t), choose(_, t')
 
+
+# Non-determinism without choose aggregation
+# 1. Mod + choose to index into relation. Assume num is indexed
+num(i, n, l, t') :- num(i, n, l, t), succ(t, t')
+numCount(count<i>, l, t) :- num(i, _, l, t)
+randNum(n, l, t) :- num(i, n, l, t), choose(_, t'), numCount(c, l, t), mod(t', c, i)
+client_out(payload, n, client, t') :- client_in(client, payload, l, t), randNum(n, l, t), choose(_, t')
+# 2. Using non-shorthand choose
+randNum(n', l, t) :- num(n, l, t), choose((l, t), (n'))
+client_out(payload, n, client, t') :- client_in(client, payload, l, t), randNum(n, l, t), choose(_, t')
+
+
+# Anti-persistence
+# 1. Multi-value choose, conditional un-persist, assume "num" is initialized with values 1-5. Deterministic (client knows it will not receive some values back)
+num(n, l, t') :- num(n, l, t), succ(t, t'), ¬client_in(client, n, l, t) # don't persist if client sent the number
+client_out(payload, n, client, t') :- client_in(client, payload, l, t), num(n, l, t), choose(_, t')
+# 2. Multi-value choose, conditional un-persist, assume "1to5" is initialized with values 1-5. Deterministic. Change conditional persist to negated persistence.
+recv(n, l, t) :- client_in(client, n, l, t)
+recv(n, l, t') :- recv(n, l, t), succ(t, t')
+num(n, l, t) :- 1to5(n, l, t), ¬recv(n, l, t) # succ optional (either send back same number or don't)
+client_out(payload, n, client, t') :- client_in(client, payload, l, t), num(n, l, t), choose(_, t')
+
+
+
+
+
+# Determining domains, assuming known values in tables like nat(n), is_even(n), etc
+# 1. Filter, domain known (intersection)
+num(n, l, t) :- nat(n), prime(n)
+# 2. Cross product, domain known
+pair(a, b, l, t) :- nat(a), prime(b)
+# 3. Non-deterministic filter, 1-directional domain shift (t is always increasing), invisible (no guarantees on what client will/will not see next)
+num(n, l, t) :- nat(n), choose(t, n)
+# 4. Non-deterministic filter, 1-directional domain shift, visible. Example is pretty complex though (involves sucessor and negation)
+used(n, l, t) :- num(n, l, t)
+used(n, l, t) :- used(n, l, t), succ(t, t')
+num(n, l, t') :- nat(n), choose(t, n), ¬used(n, l, t), succ(t, t')
+# 4. Non-deterministic filter, no specific direction of domain shift
+
+
+
 # Entanglement?

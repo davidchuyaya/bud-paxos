@@ -1,0 +1,88 @@
+######################## proposer
+p1b(a, l, i, n, mi, mn, l, t') :- p1b(a, l, i, n, mi, mn, l, t), succ(t, t')
+p1bLog(a, p, s, pi, pn, i, n, l, t') :- p1bLog(a, p, s, pi, pn, i, n, l, t), succ(t, t')
+p2b(a, p, s, i, n, mi, mn, l, t') :- p2b(a, p, s, i, n, mi, mn, l, t), succ(t, t')
+receivedBallots(i, n, l, t') :- receivedBallots(i, n, l, t), succ(t, t')
+payloads(p, l, t) :- client_in(p, l, t)
+payloads(p, l, t') :- payloads(p, l, t), succ(t, t')
+iAmLeader(arrivalTime, l, t') :- iAmLeader(arrivalTime, l, t), succ(t, t')
+
+# control flow (not sure what to show)
+RelevantP1bs(acceptorID, logSize, l, t) :- p1b(acceptorID, logSize, i, num, _, _, l, t), id(i), ballot(num, l, t)
+# projection 
+receivedBallots(maxBallotID, maxBallotNum, l, t) :- p1b(_, _, _, _, maxBallotID, maxBallotNum, l, t)
+receivedBallots(maxBallotID, maxBallotNum, l, t) :- p2b(_, _, _, _, _, maxBallotID, maxBallotNum, l, t)
+MaxReceivedBallotNum(max<num>, l, t) :- receivedBallots(_, num, l, t)
+MaxReceivedBallot(max<id>, num, l, t) :- MaxReceivedBallotNum(num, l, t), receivedBallots(id, num, l, t)
+# control flow (prove that IsLeader is a toggle)
+IsLeader(l, t) :- CountMatchingP1bs(c, l, t), quorum(size), c >= size, id(i), ballot(num, l, t), MaxReceivedBallot(maxId, maxNum, l, t), ballotGeq(i, num, maxId, maxNum)
+# inherited control flow
+NewBallot(newNum, l, t) :- MaxReceivedBallot(maxId, maxNum, l, t), id(i), ballot(num, l, t), ballotGt(maxId, maxNum, i, num), timeout(l, t), LeaderExpired(l, t), newNum = maxNum + 1 # TODO: Why do we know that this one inherits? Because it writes back into ballot? What if it didn't?
+NewBallot(newNum, l, t) :- ¬receivedBallots(_, _, l, t), ballot(num, l, t), timeout(l, t), newNum = num + 1
+# projection
+p1a(i, i, num, a, t') :- id(i), NewBallot(num, l, t), acceptors(a), choose(_, t')
+ballot(num, l, t') :- NewBallot(num, l, t), succ(t, t')
+ballot(num, l, t') :- ballot(num, l, t), ¬NewBallot(_, l, t), succ(t, t')
+# control flow
+RelevantP1bLogs(acceptorID, payload, slot, payloadBallotID, payloadBallotNum, l, t) :- p1bLog(acceptorID, payload, slot, payloadBallotID, payloadBallotNum, i, num, l, t), id(i), ballot(num, l, t)
+# projection
+P1bMatchingEntry(payload, slot, count<acceptorID>, payloadBallotID, payloadBallotNum, l, t) :-  RelevantP1bLogs(acceptorID, payload, slot, payloadBallotID, payloadBallotNum, l, t)
+P1bLargestEntryBallotNum(slot, max<payloadBallotNum>, l, t) :- RelevantP1bLogs(_, _, slot, _, payloadBallotNum, l, t)
+P1bLargestEntryBallot(slot, max<payloadBallotID>, payloadBallotNum, l, t) :- P1bLargestEntryBallotNum(slot, payloadBallotNum, l, t), RelevantP1bLogs(_, _, slot, payloadBallotID, payloadBallotNum, l, t)
+p2a(i, payload, slot, i, num, a, t') :- ResentEntries(payload, slot, l, t), id(i), ballot(num, l, t), acceptors(a), choose(_, t')
+p2a(i, payload, slot, i, num, a, t') :- ChosenPayload(payload, l, t), MinLogHole(slot, l, t), id(i), ballot(num, l, t), acceptors(a), choose(_, t')
+# control flow
+CountMatchingP2bs(payload, slot, count<acceptorID>, l, t) :- p2b(acceptorID, payload, slot, i, num, _, _, l, t), id(i), ballot(num, l, t)
+
+
+
+# acceptor
+ballots(i, n, l, t') :- ballots(i, n, l, t), succ(t, t')
+log(p, slot, ballotID, ballotNum, l, t') :- log(p, slot, ballotID, ballotNum, l, t), succ(t, t')
+
+# projection
+ballots(id, num, l, t) :- p1a(_, id, num, l, t)
+MaxBallotNum(max<num>, l, t) :- ballots(_, num, l, t) 
+MaxBallot(max<id>, num, l, t) :- MaxBallotNum(num, l, t), ballots(id, num, l, t) 
+p1b(i, size, ballotID, ballotNum, maxBallotID, maxBallotNum, proposerID, t') :- p1a(proposerID, ballotID, ballotNum, l, t), id(i), LogSize(size, l, t), MaxBallot(maxBallotID, maxBallotNum, l, t), choose(_, t')
+LogEntryMaxBallotNum(slot, max<ballotNum>, l, t) :- log(_, slot, _, ballotNum, l, t)
+LogEntryMaxBallot(slot, max<ballotID>, ballotNum, l, t) :- LogEntryMaxBallotNum(slot, ballotNum, l, t), log(_, slot, ballotID, ballotNum, l, t)
+p1bLog(i, payload, slot, payloadBallotID, payloadBallotNum, ballotID, ballotNum, proposerID, t') :- id(i), log(payload, slot, payloadBallotID, payloadBallotNum, l, t), LogEntryMaxBallot(slot, payloadBallotID, payloadBallotNum, l, t), p1a(proposerID, ballotID, ballotNum, l, t), choose(_, t')
+# inherited control flow
+log(payload, slot, ballotID, ballotNum, l, t) :- p2a(_, payload, slot, ballotID, ballotNum, l, t), MaxBallot(maxID, maxNum, l, t), ballotGeq(ballotID, ballotNum, maxID, maxNum)
+# projection
+p2b(i, payload, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, proposerID, t') :- p2a(proposerID, payload, slot, ballotID, ballotNum, l, t), id(i), MaxBallot(maxBallotID, maxBallotNum, l, t), choose(_, t')
+
+
+
+
+# Question:
+# Why is this inherited control flow
+NewBallot(newNum, l, t) :- MaxReceivedBallot(maxId, maxNum, l, t), id(i), ballot(num, l, t), ballotGt(maxId, maxNum, i, num), timeout(l, t), LeaderExpired(l, t), newNum = maxNum + 1
+# and this just control flow? How do we know whether the output contains the ballot?
+RelevantP1bs(acceptorID, logSize, l, t) :- p1b(acceptorID, logSize, i, num, _, _, l, t), id(i), ballot(num, l, t)
+
+
+
+# Control flows & explanations of their use
+# Things that JUST feed back into the ballot, can ignore?
+# 1. Generate a new ballot when a larger one is seen. Monotonically increasing (NewBallot -> ballot +1 -> NewBallot)? Current definition NOT monotonically increasing (maxNum may actually be smaller than current num due to non-FIFO ordering).
+NewBallot(newNum, l, t) :- MaxReceivedBallot(maxId, maxNum, l, t), id(i), ballot(num, l, t), ballotGt(maxId, maxNum, i, num), timeout(l, t), LeaderExpired(l, t), newNum = maxNum + 1
+# 2. Generate a new ballot at the beginning of execution. Monotonically increasing (NewBallot -> ballot +1 -> NewBallot).
+NewBallot(newNum, l, t) :- ¬receivedBallots(_, _, l, t), ballot(num, l, t), timeout(l, t), newNum = num + 1
+
+# Toggle
+# 3. Is leader = true when a quorum of acceptors accept the ballot. A toggle since MaxReceived can be greater/lower if other proposers increment
+IsLeader(l, t) :- CountMatchingP1bs(c, l, t), quorum(size), c >= size, id(i), ballot(num, l, t), MaxReceivedBallot(maxId, maxNum, l, t), ballotGeq(i, num, maxId, maxNum)
+
+# Using ballots in a way that ignores "progress" (pure equality, doesn't check >).
+# 4. Collect p1bs relevant to the current round.
+RelevantP1bs(acceptorID, logSize, l, t) :- p1b(acceptorID, logSize, i, num, _, _, l, t), id(i), ballot(num, l, t)
+# 5. Similar to 4.
+RelevantP1bLogs(acceptorID, payload, slot, payloadBallotID, payloadBallotNum, l, t) :- p1bLog(acceptorID, payload, slot, payloadBallotID, payloadBallotNum, i, num, l, t), id(i), ballot(num, l, t)
+# 6. Similar to 4.
+CountMatchingP2bs(payload, slot, count<acceptorID>, l, t) :- p2b(acceptorID, payload, slot, i, num, _, _, l, t), id(i), ballot(num, l, t)
+
+# Ballot comparison is a toggle
+# 7. Acceptor: persist value to log if ballot >= max ballot.
+log(payload, slot, ballotID, ballotNum, l, t) :- p2a(_, payload, slot, ballotID, ballotNum, l, t), MaxBallot(maxID, maxNum, l, t), ballotGeq(ballotID, ballotNum, maxID, maxNum)

@@ -1,0 +1,95 @@
+num(n, l, t)
+Next(n, l, t)
+client_in(client, payload, l, t)
+client_out(payload, l, t)
+
+# Certain relations are "non-deterministic" to the client because it cannot know the current state of those relations. Which of these "indirectly-exposed relations are deterministic?"
+
+
+# 1. Non-interaction. If the client input/output path is completely separate from the changing state, then the changing state does not matter and can be replicated.
+Next(n', l, t') :- num(n, l, t), add(n, 1, n')
+num(n, l, t') :- num(n, l, t), succ(t, t')
+client_out(payload, client, t') :- client_in(client, payload, l, t), choose(_, t')
+# 2. Interaction (like ballots) but "num" has no values once it counts up to 10. Deterministic; client_in cross joins will fail. Conclusion: Discarded interaction (cross join) is only safe if we can do domain analysis and guarantee that a value will always exist. Feels like "choose", which is only non-deterministic if domain > 1.
+Next(n', l, t') :- num(n, l, t), add(n, 1, n')
+Max(max<n>, l, t) :- num(n, l, t)
+num(n, l, t') :- num(n, l, t), succ(t, t'), Max(m, l, t), m < 10
+temp(client, payload, n, l, t) :- client_in(client, payload, l, t), num(n, l, t)
+client_out(payload, client, t') :- temp(client, payload, _, l, t), choose(_, t')
+
+# Derived values exposed (like rotating ballot -> isLeader). Examples in domain.dl (is_even on incrementing numbers). Direct path of value dependencies from values to output? Seems to require domain analysis + execution simulation (otherwise how do you know if a value might be even)?
+
+# Branching paths (see ballot compare example below). Branching = conditional output = joins on value
+
+# Local-time based changes (seems non-deterministic?). See ballot self-incrementing example
+
+# Non-cross joins
+# 1. Value exposed: Return client input if it exactly matches ballot. Deterministic: client knows that inputs with lower ballots cannot be persisted. 
+ballot(n', l, t') :- ballot(n, l, t), add(n, 1, n'), succ(t, t')
+temp(client, n, l, t) :- client_in(client, n, l, t), ballot(n, l, t) # Assume client sends an int
+client_out(payload, client, t') :- temp(client, payload, l, t), choose(_, t')
+# 2. Value exposed: Return client input if the existing set of ballots contains the client input. Deterministic: client knows that inputs with lower ballots MUST be persisted.
+ballot(n, l, t') :- ballot(n, l, t), succ(t, t')
+ballot(n', l, t') :- ballot(n, l, t), add(n, 1, n'), succ(t, t')
+temp(client, n, l, t) :- client_in(client, n, l, t), ballot(n, l, t)
+client_out(payload, client, t') :- temp(client, payload, l, t), choose(_, t')
+# 3. Value hidden: Return client input once switch as been flipped. Deterministic: all future inputs from client must be persisted.
+ballot(n', l, t') :- ballot(n, l, t), add(n, 1, n'), succ(t, t')
+open(l, t) :- ballot(n, l, t), n > 10
+temp(client, n, l, t) :- client_in(client, n, l, t), open(l, t)
+client_out(payload, client, t') :- temp(client, payload, l, t), choose(_, t')
+
+# Analyzing ballot-like objects
+# Cross join (assume ballot has initial value). Interaction but value discarded. Still non-deterministic. Note that potential duplicates are removed when messages are put on client_out, so the client doesn't have any info on ballots.
+ballot(n, l, t') :- ballot(n, l, t), succ(t, t')
+temp(client, payload, n, l, t) :- client_in(client, payload, l, t), ballot(n, l, t)
+client_out(payload, client, t') :- temp(client, payload, _, l, t), choose(_, t')
+# Increment + cross join. Still fine.
+ballot(n', l, t') :- ballot(n, l, t), add(n, 1, n'), succ(t, t')
+temp(client, payload, n, l, t) :- client_in(client, payload, l, t), ballot(n, l, t)
+client_out(payload, client, t') :- temp(client, payload, _, l, t), choose(_, t')
+# Increment + cross join + compare. New values replace old if time > old time by 5. Oddly non-deterministic (don't think client can deduce the ballot)
+ballot(n', l, t') :- ballot(n, l, t), add(n, 1, n'), succ(t, t')
+temp(client, payload, n, l, t) :- client_in(client, payload, l, t), ballot(n, l, t)
+register(c1, p1, n1, l, t) :- register(c1, p1, n1, l, t), temp(c2, p2, n2, l, t), n1 + 5 > n2
+register(c1, p1, n1, l, t) :- register(c1, p1, n1, l, t), temp(c2, p2, n2, l, t), n1 + 5 <= n2
+client_out(payload, client, t') :- register(client, payload, _, l, t), choose(_, t')
+# Multi-ballots competing? (Same as just adding a column)
+
+# Analyze ballot modifications that make it deterministic, compare
+
+# Client vs local-triggered (deterministic) changes. Seems adding non-determinism here doesn't do anything
+# 1. Client-triggered changes: Ballots that only increment when the client triggers. Deterministic (client knows only every 5th message will be saved). Need path independence for local-time triggered changing value.
+ballot(n', l, t') :- ballot(n, l, t), add(n, 1, n'), client_in(_, _, l, t), succ(t, t')
+ballot(n, l, t') :- ballot(n, l, t), ¬client_in(_, _, l, t), succ(t, t')
+temp(client, payload, n, l, t) :- client_in(client, payload, l, t), ballot(n, l, t)
+Next(c2, p2, n2, l, t) :- register(_, _, n1, l, t), temp(c2, p2, n2, l, t), n1 + 5 > n2
+Next(c1, p1, n1, l, t) :- register(c1, p1, n1, l, t), temp(_, _, n2, l, t), n1 + 5 <= n2
+register(c, p, n, l, t') :- Next(c, p, n, l, t), succ(t, t')
+client_out(payload, client, t') :- Next(client, payload, _, l, t), choose(_, t')
+# 2. Local-triggered change in different direction from client: Ballots that increment when the client triggers, but also DECREMENTS on its own (only ballot lines copied, remaining 4 lines are the same). Deterministic; the client knows AT LEAST 5 messages will be lost.
+ballot(n', l, t') :- ballot(n, l, t), add(n, 1, n'), client_in(_, _, l, t), succ(t, t')
+ballot(n', l, t') :- ballot(n, l, t), add(n, -1, n'), ¬client_in(_, _, l, t), succ(t, t')
+# 3. Local-triggered change in same direction as client: Ballots that increment when the client triggers, but also INCREMENTS on its own. Non-deterministic. Seems non-deterministic when local-time triggered changes are in the same "direction" as the client's changes? If self-triggered changes can mimic some number of client triggered changes?
+ballot(n', l, t') :- ballot(n, l, t), add(n, 1, n'), client_in(_, _, l, t), succ(t, t')
+ballot(n', l, t') :- ballot(n, l, t), add(n, 1, n'), ¬client_in(_, _, l, t), succ(t, t')
+# 4. Local-triggered change in same direction as client, can differentiate changes, but don't check that way: Ballots x2 when client triggers, x3 otherwise. Client knows that ballot is a multiple of 2^ how many messages the client sent. Since comparison is greater than (not checking mod), non-deterministic.
+ballot(n', l, t') :- ballot(n, l, t), mult(n, 2, n'), client_in(_, _, l, t), succ(t, t')
+ballot(n', l, t') :- ballot(n, l, t), mult(n, 3, n'), ¬client_in(_, _, l, t), succ(t, t')
+# 5. Local-triggered change in same direction as client, can differentiate changes, and check that way: Ballots x2 when client triggers, x3 otherwise. Only every 3rd message sent by client is preserved. Deterministic.
+ballot(n', l, t') :- ballot(n, l, t), mult(n, 2, n'), client_in(_, _, l, t), succ(t, t')
+ballot(n', l, t') :- ballot(n, l, t), mult(n, 3, n'), ¬client_in(_, _, l, t), succ(t, t')
+Next(c2, p2, n2, l, t) :- register(_, _, n1, l, t), temp(c2, p2, n2, l, t), n2 / n1 mod 8 = 0
+Next(c1, p1, n1, l, t) :- register(c1, p1, n1, l, t), temp(_, _, n2, l, t), n2 / n1 mod 8 != 0
+# 6. Eventual output regardless of state: Ballot decreases without client input, output when ballot is lower than when input was received by 10. All messages should eventually be returned (need to analyze and understand that ballot -1 will eventually arrive at greater than 10 difference). Note: doesn't work without persistence.
+ballot(n', l, t') :- ballot(n, l, t), add(n, 1, n'), client_in(_, _, l, t), succ(t, t')
+ballot(n', l, t') :- ballot(n, l, t), add(n, -1, n'), ¬client_in(_, _, l, t), succ(t, t')
+store(client, payload, n, l, t) :- client_in(client, payload, l, t), ballot(n, l, t)
+store(c, p, n, l, t') :- store(c, p, n, l, t), succ(t, t')
+client_out(payload, client, t') :- store(client, payload, n, l, t), ballot(b, l, t), n - 10 > b, choose(_, t')
+
+
+
+# General properties we need for replication
+# Input mimicry: Client input triggered actions = some automatic triggered actions
+# Cyclic ballots: No actual progress is made independent of the client. The next leader can be any proposer.

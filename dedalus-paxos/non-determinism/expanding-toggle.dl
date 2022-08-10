@@ -1,0 +1,19 @@
+# What if a value was monotonically changing (non-cyclic progress) but it was read in a way that's not detectable?
+
+
+# 1. Incrementing number, read = is_even. Copied from domain.dl
+is_even(n, bool) # bool = true if even, false otherwise
+num(n, l, t)
+client_in(client, l, t)
+client_out(payload, l, t)
+# Increment num. Its domain is shrinking (rising natural numbers)
+num(n', l, t') :- num(n, l, t), n' = n + 1, succ(t, t')
+client_out(bool, client, t') :- is_even(n, bool), num(n, l, t), client_in(client, l, t), choose(_, t')
+
+
+# 2. Pure relations, non-infinite
+clients(c, l, t)
+
+clients(c, l, t) :- client_in(c, l, t)
+clients(c, l, t') :- clients(c, l, t), succ(t, t')
+client_out()
