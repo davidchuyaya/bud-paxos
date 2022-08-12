@@ -1,7 +1,7 @@
 # What if a value was monotonically changing (non-cyclic progress) but it was read in a way that's not detectable?
 
 
-# 1. Incrementing number, read = is_even. Copied from domain.dl
+# 1. Incrementing number, read = is_even. Borrowed from domain.dl
 is_even(n, bool) # bool = true if even, false otherwise
 num(n, l, t)
 client_in(client, l, t)
@@ -11,9 +11,95 @@ num(n', l, t') :- num(n, l, t), n' = n + 1, succ(t, t')
 client_out(bool, client, t') :- is_even(n, bool), num(n, l, t), client_in(client, l, t), choose(_, t')
 
 
-# 2. Pure relations, non-infinite
-clients(c, l, t)
+# 2. Single relation that feeds into multiple toggles can still be replicated. Note: toggles implicitly linked by time... may be combinations of toggle outputs which are impossible.
+is_even(n, bool)
+is_mod3(n, bool)
+num(n, l, t)
+client_in(client, l, t)
+client_even_out(payload, l, t)
+client_mod3_out(payload, l, t)
 
-clients(c, l, t) :- client_in(c, l, t)
-clients(c, l, t') :- clients(c, l, t), succ(t, t')
-client_out()
+num(n', l, t') :- num(n, l, t), n' = n + 1, succ(t, t')
+client_even_out(even, client, t') :- is_even(n, even), num(n, l, t), client_in(client, l, t), choose(_, t')
+client_mod3_out(mod3, client, t') :- is_mod3(n, mod3), num(n, l, t), client_in(client, l, t), choose(_, t')
+
+
+# 3. Relations that increment at the same pace, linked by time; system can STILL be replicated. A client that talks to the system expects either both "true" or both "false". Not a problem here... any part of the system that responds will respond with something locally coherent.
+is_even(n, bool)
+is_mod4(n, bool)
+num_even(n, l, t)
+num_mod4(n, l, t)
+client_in(client, l, t)
+client_even_out(payload, l, t)
+client_mod4_out(payload, l, t)
+
+num_even(n', l, t') :- num_even(n, l, t), n' = n + 1, succ(t, t')
+num_mod4(n', l, t') :- num_mod4(n, l, t), n' = n + 2, succ(t, t')
+client_even_out(even, client, t') :- is_even(n, even), num_even(n, l, t), client_in(client, l, t), choose(_, t')
+client_mod4_out(mod3, client, t') :- is_mod4(n, mod3), num_mod4(n, l, t), client_in(client, l, t), choose(_, t')
+
+
+# 4. Non-progress, non-toggle inspection of increasing value. 1 increasing number, that number + 10 sent to some random future time. Comparison between deterministic & non-deterministic source is a toggle, still fits previous definition.
+num(n, l, t)
+futureNum(n, l, t)
+client_in(client, l, t)
+client_out(l, t)
+
+num(n', l, t') :- num(n, l, t), n' = n + 1, succ(t, t')
+futureNum(n', l, t') :- num(n, l, t), n' = n + 10, choose(_, t') # current num + 10 is delivered to self at random future time.
+client_out(client, t') :- num(n, l, t), futureNum(n, l, t), client_in(client, l, t), choose(_, t')
+
+
+# 5. Distillation of ballot checked for equality (non-progress, non-toggle inspection). 1 randomly increasing number, 1 message sent to the future. Comparison, respond if equal. Both num and delayed have sources of non-determinism; their join is a "toggle" that outputs what the client input earlier. Random message drops is replicable.
+Inc(l, t)
+num(n, l, t)
+delayed(client, num, l, t)
+client_in(client, l, t)
+client_out(payload, l, t)
+
+Inc(l, t') :- choose(_, t') # num will increment at some random point in the future
+num(n', l, t') :- num(n, l, t), ¬Inc(l, t), succ(t, t')
+num(n', l, t') :- num(n, l, t), Inc(l, t), n' = n + 1, succ(t, t')
+delayed(c, n, l, t) :- num(n, l, t), client_in(c, l, t), choose(_, t') # send message with current num into future
+client_out(payload, client, t') :- delayed(client, n, l, t), num(n, l, t), choose(_, t') # if message arrives before num increments, reply to client
+
+
+# 6. Non-toggle (just randomly outputting client input). Still replicable.
+randBuffer(client, l, t)
+client_in(client, l, t)
+client_out(l, t)
+
+randBuffer(c, l, t') :- client_in(c, l, t), choose(_, t')
+client_out(client, t') :- randBuffer(client, l, t), choose(_, t')
+
+
+# 7. Non-toggle with stateful transformations on client input. Not replicable. (Replica missing client inputs will return a partial sum.)
+prev(num, l, t)
+total(num, l, t)
+client_in(client, num, l, t)
+client_out(num, l, t)
+
+prev(n, l, t) :- client_in(_, n, l, t)
+prev(n, l, t') :- prev(n, l, t), succ(t, t') 
+total(sum<n>, l, t) :- prev(n, l, t)
+client_out(n, client, t') :- total(n, l, t), client_in(client, _, l, t), choose(_, t')
+
+
+# 8. Distillation of ballot check for inequality (progress, non-toggle inspection). 1 randomly increasing number, that number continuously placed in a buffer at a random time in the future. Comparison, respond if increasing number >= maxNum + 10. Replicable because results of comparison is non-deterministic (but NOT a toggle?).
+Inc(l, t)
+num(n, l, t)
+numBuffer(n, l, t) # holds multiple numbers at random points in the future
+MaxNum(n, l, t)
+delayed(client, num, l, t)
+client_in(client, l, t)
+client_out(payload, l, t)
+
+Inc(l, t') :- choose(_, t') # num will increment at some random point in the future
+num(n', l, t') :- num(n, l, t), ¬Inc(l, t), succ(t, t')
+num(n', l, t') :- num(n, l, t), Inc(l, t), n' = n + 1, succ(t, t')
+numBuffer(n, l, t) :- num(n, l, t), choose(_, t') # send num into buffer at some random point in the future
+MaxNum(max<n>, l, t) :- numBuffer(n, l, t)
+delayed(c, n, l, t) :- num(n, l, t), client_in(c, l, t), choose(_, t') # send message with current num into future
+client_out(payload, client, t') :- delayed(client, n, l, t), MaxNum(nMax, l, t), n >= nMax + 10, choose(_, t')
+
+
