@@ -1,0 +1,38 @@
+# Investigate how properties are created/inherited
+
+
+# Goal: Want to use incrementing num & mod n to create a cycle.
+# 1. num has the property that it increments in the next timestamp.
+num(n, l, t)
+num(n', l, t') :- num(n, l, t), add(n, 1, n'), succ(t, t')
+
+# 2. num has the property that it "sometimes" increments in the next timestamp. Still can be used to create a cycle.
+num(n, l, t)
+Next(n, l, t)
+Next(n', l, t') :- num(n, l, t), add(n, 1, n'), choose(_, l, t')
+num(n, l, t') :- num(n, l, t), succ(t, t'), ¬Next(n', l, t)
+num(n', l, t') :- Next(n', l, t), succ(t, t')
+
+# 3. Conditional increment, joined (not on value) with non-replicable, client-opaque relation. Stops at some random time (when flip is true). No longer a toggle but client can't tell, replicable. If flip is exposed to the client (or written to by the client), then the client can tell.
+num(n, l, t)
+Next(n, l, t)
+flip(l, t)
+flip(l, t') :- choose((l), (t'))
+flip(l, t') :- flip(l, t), succ(t, t')
+Next(n', l, t') :- num(n, l, t), add(n, 1, n'), ¬flip(l, t), choose(_, l, t')
+num(n, l, t') :- num(n, l, t), succ(t, t'), ¬Next(n', l, t)
+num(n', l, t') :- Next(n', l, t), succ(t, t')
+
+# 4. Conditional increment, joined on value with non-replicable, client-opaque relation. Stops incrementing at a random number. Same situation (no longer a toggle but client can't tell, still replicable).
+# Seems to indicate that not joining on value = joining on value in some cases, so non-joining relations need to be toggles as well.
+nat(n)
+num(n, l, t)
+Next(n, l, t)
+flip(n, l, t)
+flip(n, l, t') :- nat(n), choose((n, l), (t'))
+flip(n, l, t') :- flip(n, l, t), succ(t, t')
+Next(n', l, t') :- num(n, l, t), add(n, 1, n'), ¬flip(n, l, t), choose(_, l, t')
+num(n, l, t') :- num(n, l, t), succ(t, t'), ¬Next(n', l, t)
+num(n', l, t') :- Next(n', l, t), succ(t, t')
+
+# 5. 

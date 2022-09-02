@@ -1,0 +1,227 @@
+nat(n) # can be any arbitrary collection of finite/infinite values?
+cycle(n, l, t)
+client_in(client, payload, l, t)
+client_out(payload, num, l, t)
+
+cycle(choose<n>, l, t) :- nat(n)
+client_out(payload, n, client, t') :- client_in(client, payload, l, t), cycle(n, l, t), choose((client, payload, n, l, t), (t'))
+# without the choose<n> notation, fully formal "choose":
+cycle(n, l, t) :- choose((l, t), (n)), nat(n) # for each location and time, select a "n"
+
+
+
+# 1. Choose only once (at the beginning of the program). Not replicable (the client knows that numbers can only be seen once).
+cycle(n, l, t') :- nat(n), choose((n, l), (t'))
+# Note that choose's key does not include "t" (which may go against Dedalus rules?).
+# here's a rewrite that does include "t"
+used(n, l, t) :- cycle(n, l, t)
+used(n, l, t') :- used(n, l, t), succ(t, t')
+cycle(n, l, t) :- choose((l, t), (n)), nat(n), ¬used(n, l, t)
+
+
+# 2. Choose once but re-choose on receipt. Replicable!
+cycle1(n, l, t') :- nat(n), choose((n, l), (t'))
+cycle2(n, l, t') :- cycle1(n, l, t), choose((n, l), (t')) # upon receipt, choose a new time for the next receipt.
+cycle2(n, l, t') :- cycle2(n, l, t), choose((n, l, t), (t'))
+
+
+# choose((a, b), (c)), client only knows a, b. Not replicable. Assuming the client "knows" location l, the "choose a time for each number" example above shows it's not replicable. Is that the right example? (Does the client not know the time t'? It knows that t' has already passed...)
+# choose((a, b), (c)), client only knows b, c. Replicable. See the "choose a number for each location and time" example above. Intuitively, since the FD in choose is not 1:1, it client cannot deduce "a".
+# choose((a, b), (c, d)), client only knows a, b. Since we interpret choose syntax as "For each a,b combo, choose a unique c AND a unique d", then knowing a,b implies a unique c and a unique d.
+teachers(x)
+schools(y)
+assignment(x, y, l, t) # the relation to replicate
+client_in(client, payload, l, t)
+client_out(payload, l, t)
+assignment(x, y, l, t') :- teachers(x), schools(y), choose((x, l), (y, t'))
+# Interpretations of what "Knowing a, b" means:
+# 1. "Knowing a, b" = not witnessing c, d at all. Client doesn't see anything
+client_out(x, client, t') :- client_in(client, x, l, t), teachers(x, l, t), choose(_, t')
+# 2. "Knowing a, b" means the client can glimpse t without seeing the exact value (join but don't return). Not replicable; the client can't see the same teacher assigned twice. 
+client_out(x, client, t') :- client_in(client, x, l, t), assignment(x, _, l, t), choose(_, t')
+
+# Illegal combinations of choose (what we forbid in Dedalus). Conclusion: don't allow 2nd parameter to be location.
+cycle(n, l, t') :- nat(n), choose((n), (l, t')) # forbidden: can't "choose" a location, requires coordination
+cycle(n, l, t') :- nat(n), choose((l), (n, t'))
+cycle(n, l, t') :- nat(n), choose((t), (n, l)) # forbidden for location.
+cycle(n, l, t') :- nat(n), choose((n, l), (t')) 
+cycle(n, l, t') :- nat(n), choose((n, t), (l)) # forbidden for location
+cycle(n, l, t') :- nat(n), choose((l, t), (n))
+
+# Partial knowledge of any variable.
+# What exposes entanglement?
+
+# How do locks tie into this?
+lock(l, t)
+client_in(client, l, t)
+client_out(locked, l, t)
+lock(l, t') :- client_in(_, l, t), succ(t, t') # lock after first sender
+lock(l, t') :- lock(l, t), succ(t, t')
+client_out("true", client, t') :- client_in(client, l, t), lock(l, t), choose(_, t')
+client_out("false", client, t') :- client_in(client, l, t), ¬lock(l, t), choose(_, t')
+# swapping succ for choose (in persistence) changes replicability; the client doesn't know when the lock will be on or not
+lock(l, t') :- lock(l, t), choose((l, t), (t')) # Note; this should be a "causality choose".
+
+
+# succ and its 2-way FDs
+ballot(n', l, t') :- ballot(n, l, t), add(n, 1, n'), succ(t, t') # Intuitively we know there's a 1:1 FD between n and t (the relation holds a single value). We know there's a 1:1 FD between n@t and n+1@t+1, between n and t+1, and between n+1 and t.
+# assuming there's only 1 initial value for ballot
+ballot(1, "localhost", 0). # Exists following functional dependencies: n -> l,t. l -> n,t. t -> n,l.
+# if we add a successor rule:
+ballot(n, l, t') :- ballot(n, l, t), succ(t, t') # No longer dependencies from n or l to t.
+# if we add an addition rule:
+ballot(n', l, t) :- ballot(n, l, t), add(n, 1, n') # No longer dependencies from l or t to n.
+# if we add an addition rule with the successor:
+ballot(n', l, t') :- ballot(n, l, t), add(n, 1, n'), succ(t, t') # No longer dependencies from l to n (changes over time). t keeps dependencies since it's incremented.
+# General rule: if different variable n' appears at head where n used to be, replace all dependencies that outputted n (it's now not a function, since there are multiple possible values). If there is a dependency from n to n', then dependencies that read from n.
+
+# choose is a FD with an opaque function, succ is not opaque
+
+
+# Union choose with something that preserves FDs
+next(n', l, t') :- ballot(n, l, t), add(n, 1, n'), succ(t, t')
+
+# Some dummy relation with functional dependencies, see if this extends?
+# Monotonic increasing properties?
+
+
+# Aside: Causal delivery
+readBuffer(_, sendT, dest, arriveT) :- out(_, dest, src, sendT), choose((_, dest, src, sendT), (arriveT)), time(arriveT)
+readBuffer(_, sendT, l, t') :- readBuffer(_, sendT, l, t), succ(t, t'), sendT >= t
+... :- ..., blah(_, l, t), readBuffer(_, sendT, l, t), sendT < t
+
+# Aside: Time-keeping relation can reveal local time without explicit entanglement
+num(0, "localhost", 0).
+num(n', l, t') :- num(n, l, t), succ(t, t'), add(n, 1, n')
+client_out(..., n, client, t') :- ..., num(n, l, t)
+
+
+client_out(m, client, t') :- client_in(client, l, t), rand(n, l, t), mod(n, 5, m), choose(_, t')
+
+
+
+
+# Figuring out what dependencies we want for attribute closures. Goal: If all attributes of a relation are in the client's attribute closure (except time and loc?), then the relation is not replicable. Need to be liberal about what's in the attribute closure
+# 1. Multi-write to rand. Rand is replicable, even though client_out knows the exact value of all its attributes (except time). Seem to want some sort of "backwards tracing" dependency analysis (from what client knows to whether it can predict its parent?)
+randSparse(n, l, t') :- nat(n), choose((n, l), (t'))
+rand(n, l, t) :- randSparse(n, l, t) # not replicable (client knows what has been chosen), can do uniqueness checks
+rand(n, l, t) :- ¬randSparse(_, l, t), choose((l, t), (n)) # replicable (random choose per time, client doesn't know time)
+client_out(payload, n, client, t') :- client_in(client, payload, l, t), rand(n, l, t), choose(_, t')
+
+# 2. Join but don't feed to output. Client can encode dependency from "payload" to "n" to leak "n". In fact can encode "client" to "n" dependency (client controls multiple machines, each location represents a number)
+rand(n, l, t') :- nat(n), choose((n, l), (t'))
+client_out(payload, client, t') :- client_in(client, payload, n, l, t), rand(n, l, t), choose(_, t')
+
+# 3. Join with random value. Client can't encode dependency (can't control l or t, so doesn't know FDs for n).
+rand(n, l, t') :- nat(n), choose((n, l), (t'))
+clientGen(client, n, l, t) :- client_in(client, l, t), choose((client, l, t), (n)), nat(n)
+client_out(client, t') :- clientGen(client, n, l, t), rand(n, l, t), choose(_, t')
+
+
+
+
+
+# Does the client need to know keys of FDs of all attributes in a relation to make it not replicable? What if the client only knew some FDs to some keys?
+# Partial knowledge of FDs
+# 1. For each n1, pick a time. For each n2, pick a number n3. Not replicable; non-deterministic decisions cannot be made across replicas. Client detecting non-uniqueness of 1 attribute (n1) is enough.
+rand(n1, n2, n3, l, t)
+client_in(n1, client, l, t)
+client_out(l, t)
+rand(n1, n2, n3, l, t') :- nat(n1), nat(n2), nat(n3), choose((n1, l), (t')), choose((n2, l), (n3))
+client_out(client, t') :- client_in(n1, client, l, t), rand(n1, _, _, l, t), choose(_, t')
+
+# 2. But can replicate if what the client knows is not influenced by non-determinism
+mod5(n, m, l, t)
+client_in(client, l, t)
+client_out(n, m, l, t)
+mod5(n, m, l, t) :- nat(n), choose((l), (n, t)), m = n % 5
+client_out(n, m, client, t') :- client_in(client, l, t), mod5(n, m, l, t), choose(_, t')
+
+
+
+# Simple example of tracing dependencies
+rand(n, l, t) :- nat(n), choose((n, l), (t))
+plus(m, l, t) :- rand(n, l, t), add(n, 1, m)
+client_out(m, client, t') :- client_in(client, l, t), plus(m, l, t), choose(_, t')
+
+
+teachers(x)
+schools(y)
+assignment(x, y, l, t)
+client_in(client, payload, l, t)
+client_out(payload, l, t)
+assignment(x, y, l, t') :- teachers(x), schools(y), choose((x, l), (y, t'))
+# 1. Client in x, client out y. Not replicable. Client is testing the system, directly exposes uniqueness violation
+client_out(y, client, t') :- client_in(client, x, l, t), assignment(x, y, l, t), choose(_, t')
+# 2. Client in y, client out x. Not replicable. System might randomly return uniqueness violation
+client_out(x, client, t') :- client_in(client, y, l, t), assignment(x, y, l, t), choose(_, t')
+# 3. Client in x,y. Not replicable: client can embed FDs from client -> x,y, by having a port for each combo for example. Note: this argument still depends on tracing from output attributes (client location) to what we want to see violated. What if that wasn't possible?
+client_out(client, t') :- client_in(client, x, y, l, t), assignment(x, y, l, t), choose(_, t')
+# 4. Client out x,y. Not replicable. System might randomly return uniqueness violation
+client_out(x, y, client, t') :- client_in(client, l, t), assignment(x, y, l, t), choose(_, t')
+
+
+
+# Leaking attribute dependencies. 
+# 1. AD does not strictly exist because there are 2 rules that can write different ADs into the system. But the client knows which ones it sent and which AD is actually true.
+set(n) # some finite (but not singular) set of natural numbers
+switch(l, t)
+rand(n1, n2, l, t)
+client_trigger(client, l, t)
+client_trigger_out(l, t)
+client_in(client, n1, l, t)
+client_out(n2, l, t)
+# the client "flips a switch"
+switch(l, t) :- client_trigger(_, l, t)
+switch(l, t') :- switch(l, t), succ(t, t')
+client_trigger_out(client, t') :- client_trigger(client, l, t), choose(_, t')
+# depending on the switch, rand may have a dependency from n1 -> n2
+rand(n1, n2, l, t) :- set(n1), n2 = n1 % 5, switch(l, t)
+rand(n1, n2, l, t) :- set(n1), set(n2), ¬switch(l, t)
+client_out(n2, client, t') :- client_in(client, n1, l, t), rand(n1, n2, l, t), choose(_, t')
+
+# 2. The system tells the client whether the switch is flipped, no flow in from client input necessary. Client actually knows which FDs are valid, but (in this case) cannot distinguish replicas anyway (since the switch is flipped per timestamp). If the system remembers switch state, then it's stateful.
+set(n)
+bools(b) # EDB, contains true and false
+true(b) # EDB, contains only true
+switch(b, l, t)
+rand(n1, n2, l, t)
+client_in(client, n1, l, t)
+client_out(n2, flipped, l, t)
+# the system "flips a switch"
+switch(b, l, t) :- choose((l, t), (b)), bools(b)
+# depending on the switch, rand may have a dependency from n1 -> n2
+rand(n1, n2, l, t) :- set(n1), n2 = n1 % 5, switch(b, l, t), true(b)
+rand(n1, n2, l, t) :- set(n1), set(n2), ¬switch(b, l, t), true(b)
+client_out(n2, b, client, t') :- client_in(client, n1, l, t), rand(n1, n2, l, t), switch(b, l, t), choose(_, t')
+
+# 3. Multiple co-existing attribute dependencies across rules vs within a single rule.
+set(n)
+rand(n1, n2, n3, l, t) :- nat(n1), nat(n2), nat(n3), choose((n1, l, t), (n2)), choose((n1, l, t), (n3)) # FDs from n1 to n2 and n3. Attribute dependency to n1 means that there must be THE SAME FACT with these 2 dependencies.
+rand(n1, n2, n3, l, t) :- nat(n1), nat(n2), choose((n1, l, t), (n2)), set(n3) # 2 possible ADs. Neither or both is true?
+rand(n1, n2, n3, l, t) :- nat(n1), nat(n3), choose((n1, l, t), (n3)), set(n2)
+
+
+# Attribute dependencies across rules need to worry about what the function is? 2 rules, both preserving a dependency from client_in a to rand n actually breaks the idea of dependency? (given 1 "a", it corresponds to 1 "n"). But it still fits our definition of given 1 "a", 1 such "n" must exist (nothing about uniqueness)
+rand(n, l, t) :- client_in(_, a, l, t), n = a % 5
+rand(n, l, t) :- client_in(_, a, l, t), n = a % 7
+
+
+# Tracing attribute dependency violations. Say the client has attributes A, C and the system has attribute B, and there are attribute dependencies A -> B and B -> C. We want to see when the client can detect non-uniqueness and modify our definition of attribute dependencies.
+
+# 1. AD exists but there's no 1:1 relationship, deterministic computation.
+client_in(client, a, l, t)
+client_out(c, l, t)
+rand(b, l, t)
+rand(b, l, t) :- client_in(_, a, l, t), b = a % 5
+rand(b', l, t) :- client_in(_, a, l, t), b = a % 7  # Attribute dependencies are still the same (exists some B for some AL), but AL -> B is no longer true. The client isn't actually revealing replication though (the computation is deterministic). Can't actually do 2 different chooses with the same FD domains though...
+client_out(c, client, t') :- rand(b, l, t), client_in(client, _, l, t), c = b % 5, choose(_, t')
+
+# 2. AD exists but there's no 1:1 relationship, non-deterministic computation. Doesn't make sense... either value includes time, and the client has no idea which outputs correspond to which input (assuming client port doesn't contain some FDs), or value excludes time, and there's inplicit persistence (the system remembers what it chose for (a, l)).
+
+client_in(client, a, a', l, t)
+client_out(c, l, t)
+rand(b, b', l, t)
+rand(b, b', l, t) :- client_in(_, a, _, l, t), choose((a, l), (b, b')) # AD: A -> B, A -> B'
+rand(b, b', l, t) :- client_in(_, a, a', l, t), choose((a, a', l), (b, b')) # AD: AA' -> B, AA' -> B'. Both dependencies are true (existence). 
+client_out(c, c', client, t') :- rand(b, b', l, t), client_in(client, _, _, l, t), c = b % 5, c' = b' % 5, choose(_, t')

@@ -1,3 +1,5 @@
+# Note: Interestingly, this example is non-deterministic (the time a fact will be in "rand" can't be predicted) but NOT replicable; once the client sees "true", it knows it will never see "false" again.
+
 rand(l, t)
 client_in(client, payload, l, t)
 client_out(payload, bool, l, t)

@@ -1,0 +1,19 @@
+# Hypothesis: EDB-only writes + no succ = non-deterministic
+
+
+# Counterexamples
+# 1. Client knows that once it receives "two" for a message it will never receive "one" again. Replicas will expose "state being behind". Note: Without negation, client may wait forever for "two" to arrive when it queries a replica with an earlier state. Not sure if we allow this (non-delivery shouldn't equal message loss, so no?)
+one(l, t) # assume starts with a fact at time 0
+two(l, t)
+client_in(client, l, t)
+client_out(payload, l, t)
+
+client_out("one", client, t') :- one(l, t), ¬two(l, t), client_in(client, l, t), choose(_, t')
+two(l, t') :- one(l, t), succ(t, t') # two only has a value starting at timestep 2
+client_out("two", client, t') :- two(l, t), client_in(client, l, t), choose(_, t')
+
+
+# 2. Similar example without using "succ".
+two(l, t') :- one(l, t), choose(_, t') # two only has a value starting at timestep ? > 0. Nevertheless, once the client sees "two", it expects to never see "one" again (and it might by talking to a replica that's behind).
+
+# Furthermore, if the client sees "two" it also expects to never see "two" again. However, a replica might not have responded with "two" yet, letting the client glimpse it twice.

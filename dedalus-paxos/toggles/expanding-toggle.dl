@@ -55,13 +55,13 @@ Inc(l, t)
 num(n, l, t)
 delayed(client, num, l, t)
 client_in(client, l, t)
-client_out(payload, l, t)
+client_out(l, t)
 
 Inc(l, t') :- choose(_, t') # num will increment at some random point in the future
 num(n', l, t') :- num(n, l, t), ¬Inc(l, t), succ(t, t')
 num(n', l, t') :- num(n, l, t), Inc(l, t), n' = n + 1, succ(t, t')
-delayed(c, n, l, t) :- num(n, l, t), client_in(c, l, t), choose(_, t') # send message with current num into future
-client_out(payload, client, t') :- delayed(client, n, l, t), num(n, l, t), choose(_, t') # if message arrives before num increments, reply to client
+delayed(c, n, l, t') :- num(n, l, t), client_in(c, l, t), choose(_, t') # send message with current num into future
+client_out(client, t') :- delayed(client, n, l, t), num(n, l, t), choose(_, t') # if message arrives before num increments, reply to client
 
 
 # 6. Non-toggle (just randomly outputting client input). Still replicable.
