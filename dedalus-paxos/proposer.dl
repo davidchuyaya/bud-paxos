@@ -76,17 +76,16 @@ IsLeader(l, t) :- CountMatchingP1bs(c, l, t), quorum(size), c >= size, id(i), ba
 iAmLeader(t', proposerID, t') :- IsLeader(l, t), proposers(proposerID), id(self), self != proposerID, choose(_, t')
 LatestIAmLeader(max<arrivalTime>, l, t) :- iAmLeader(arrivalTime, l, t)
 LeaderExpired(l, t) :- LatestIAmLeader(arrivalTime, l, t), leaderTimeout(timeout), t - arrivalTime > timeout
-
-# Resend p1a if we've received a larger ballot AND we waited a random amount of time (timeout) AND leader heartbeat timed out
-NewBallot(newNum, l, t) :- MaxReceivedBallot(maxId, maxNum, l, t), id(i), ballot(num, l, t), ballotGt(maxId, maxNum, i,  num), timeout(l, t), LeaderExpired(l, t), newNum = maxNum + 1 
-# Start sending p1a at beginning of program
-NewBallot(newNum, l, t) :- ¬receivedBallots(_, _, l, t), ballot(num, l, t), timeout(l, t), newNum = num + 1
-
-p1a(i, i, num, a, t') :- id(i), NewBallot(num, l, t), acceptors(a), choose(_, t')
-ballot(num, l, t') :- NewBallot(num, l, t), succ(t, t')
-ballot(num, l, t') :- ballot(num, l, t), ¬NewBallot(_, l, t), succ(t, t')
 # send timeout message with unknown arrival time
 timeout(l, t') :- timeout(l, t), choose(_, t')
+
+# Resend p1a if we waited a random amount of time (timeout) AND leader heartbeat timed out
+p1a(i, i, num, a, t') :- id(i), ballot(num, l, t), timeout(l, t), LeaderExpired(l, t), acceptors(a), choose(_, t')
+
+# ballot = max + 1
+NewBallot(newNum, l, t) :- MaxReceivedBallot(maxId, maxNum, l, t), id(i), ballot(num, l, t), ballotGt(maxId, maxNum, i,  num), newNum = maxNum + 1 
+ballot(num, l, t') :- NewBallot(num, l, t), succ(t, t')
+ballot(num, l, t') :- ballot(num, l, t), ¬NewBallot(_, l, t), succ(t, t')
 ######################## end stable leader election 
 
 
