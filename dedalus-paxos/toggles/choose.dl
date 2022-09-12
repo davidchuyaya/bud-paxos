@@ -90,13 +90,31 @@ readBuffer(_, sendT, dest, arriveT) :- out(_, dest, src, sendT), choose((_, dest
 readBuffer(_, sendT, l, t') :- readBuffer(_, sendT, l, t), succ(t, t'), sendT >= t
 ... :- ..., blah(_, l, t), readBuffer(_, sendT, l, t), sendT < t
 
+# System directly reports local time. Not replicable with non-Alvaro causality; client can see an older timestamp. With Alvaro causality...
+client_in(client, l, t)
+client_out(localtime, l, t)
+client_out(t, client, t') :- client_in(client, l, t), choose(_, t')
+
+# Expanded according to Alvaro. Assume client_in does not arrive causally. TECHNICALLY, this IS replicable... The system sends back its local time. The client is not allowed to read until its LC has past that time. Then it can send a message with a larger client time, which is only read by the system at a larger system time, etc.
+client_in(client, clientT, l, t)
+client_out(localtime, l, t)
+clientInBuffer(client, clientT, l, t)
+clientOutBuffer(systemT, l, t)
+# system
+clientInBuffer(client, clientT, l, t) :- client_in(client, clientT, l, t)
+clientInBuffer(client, clientT, l, t') :- clientInBuffer(client, clientT, l, t), succ(t, t'), clientT >= t
+client_out(t, client, t') :- clientInBuffer(client, clientT, l, t), clientT < t, choose(_, t') # system ACK
+# client
+self(client)
+system(l)
+clientOutBuffer(systemT, l, t) :- client_out(systemT, l, t)
+clientOutBuffer(systemT, l, t') :- clientOutBuffer(systemT, l, t), succ(t, t'), systemT >= t
+client_in(client, t, dest, t') :- clientOutBuffer(systemT, l, t), systemT < t, self(client), system(dest), choose(_, t') # client send ASAP
+
 # Aside: Time-keeping relation can reveal local time without explicit entanglement
 num(0, "localhost", 0).
 num(n', l, t') :- num(n, l, t), succ(t, t'), add(n, 1, n')
 client_out(..., n, client, t') :- ..., num(n, l, t)
-
-
-client_out(m, client, t') :- client_in(client, l, t), rand(n, l, t), mod(n, 5, m), choose(_, t')
 
 
 
@@ -217,11 +235,67 @@ rand(b, l, t) :- client_in(_, a, l, t), b = a % 5
 rand(b', l, t) :- client_in(_, a, l, t), b = a % 7  # Attribute dependencies are still the same (exists some B for some AL), but AL -> B is no longer true. The client isn't actually revealing replication though (the computation is deterministic). Can't actually do 2 different chooses with the same FD domains though...
 client_out(c, client, t') :- rand(b, l, t), client_in(client, _, l, t), c = b % 5, choose(_, t')
 
-# 2. AD exists but there's no 1:1 relationship, non-deterministic computation. Doesn't make sense... either value includes time, and the client has no idea which outputs correspond to which input (assuming client port doesn't contain some FDs), or value excludes time, and there's inplicit persistence (the system remembers what it chose for (a, l)).
-
+# 2. AD exists but there's no 1:1 relationship, non-deterministic computation. Doesn't make sense... either value includes time, and the client has no idea which outputs correspond to which input (assuming client port doesn't contain some FDs), or value excludes time, and there's implicit persistence (the system remembers what it chose for (a, l)). If the latter, then the client can detect replication.
+# This ties back to the ballot example and whether the system can "mimic" a client's input. Here, a client-triggered transform is not "exclusive"? 
 client_in(client, a, a', l, t)
 client_out(c, l, t)
 rand(b, b', l, t)
 rand(b, b', l, t) :- client_in(_, a, _, l, t), choose((a, l), (b, b')) # AD: A -> B, A -> B'
-rand(b, b', l, t) :- client_in(_, a, a', l, t), choose((a, a', l), (b, b')) # AD: AA' -> B, AA' -> B'. Both dependencies are true (existence). 
+rand(b, b', l, t) :- client_in(_, a, a', l, t), choose((a, a', l), (b, b')) # AD: AA' -> B, AA' -> B'. The client knows both dependencies can't point to the same fact, by Armstrong's Axioms (A -> B implies AX -> B where X is anything, but this dependency generated from choose must be different.)
 client_out(c, c', client, t') :- rand(b, b', l, t), client_in(client, _, _, l, t), c = b % 5, c' = b' % 5, choose(_, t')
+
+
+# When does the client know that it has a 1:1 input/relation value dependency? How doe sit know that the domain/co-domain dependencies co-exist in a single fact?
+# 1. Client directly writes to relation, single rule. 1:1 dependency
+client_in(client, l, t)
+client_out(n, localtime, l, t)
+rand(n, l, t)
+rand(n, l, t) :- client_in(client, l, t), nat(n), choose((client, l, t), (n)) # cheat by returning local clock to client
+client_out(n, t, client, t') :- client_in(client, l, t), rand(n, l, t), choose(_, t')
+
+# 2. Client directly writes to relation, multiple rules. Client only expects 2 unique values per time, 1:2 dependency. Might be a special case(?) because each client's input always results in a value created, and the domain of one dependency is the subset of another.
+client_in(client, l, t)
+client_out(n, localtime, l, t)
+rand(n, l, t)
+rand(n, l, t) :- client_in(client, l, t), nat(n), choose((client, l, t), (n))
+rand(n, l, t) :- client_in(_, l, t), nat(n), choose((l, t), (n)) # extra rule, conflicting dependency
+client_out(n, t, client, t') :- client_in(client, l, t), rand(n, l, t), choose(_, t')
+
+# 3. Client directly writes to relation, multiple rules, random filter. Client expects 1-2 unique values per time, can still detect replication past 2 values.
+client_in(client, l, t)
+client_out(n, localtime, l, t)
+rand(n, l, t)
+randFilter(b, l, t)
+randFilter(b, l, t) :- choose((l, t), (b)), bool(b)
+rand(n, l, t) :- client_in(client, l, t), nat(n), choose((client, l, t), (n)), randFilter(b, l, t), true(b)
+rand(n, l, t) :- client_in(_, l, t), nat(n), choose((l, t), (n))
+client_out(n, t, client, t') :- client_in(client, l, t), rand(n, l, t), choose(_, t')
+
+# 4. Client directly writes to relation but system also writes with a different dependency. 1:2 dependency.
+client_in(client, l, t)
+client_out(n, localtime, l, t)
+rand(n, l, t)
+rand(n, l, t) :- client_in(client, l, t), nat(n), choose((client, l, t), (n))
+rand(n, l, t) :- nat(n), choose((l, t), (n))
+client_out(n, t, client, t') :- client_in(client, l, t), rand(n, l, t), choose(_, t')
+
+# 5. Client directly writes to relation but system also writes with a different dependency, random filter. Same situation. Client doesn't know which dependency holds (but knows only 1 value per l,t). 
+client_in(client, l, t)
+client_out(n, localtime, l, t)
+rand(n, l, t)
+randFilter(b, l, t)
+randFilter(b, l, t) :- choose((l, t), (b)), bool(b)
+rand(n, l, t) :- client_in(client, l, t), nat(n), choose((client, l, t), (n)), randFilter(b, l, t), true(b)
+rand(n, l, t) :- nat(n), choose((l, t), (n)), randFilter(b, l, t), ¬true(b)
+client_out(n, t, client, t') :- client_in(client, l, t), rand(n, l, t), choose(_, t')
+
+# 6. Client directly writes to relation but system also writes with a different dependency; system writes some random number of times. Replicable! Client doesn't know how many unique values to expect. Exists a dependency where the client cannot read all domains? Note: Client actually knows there's some number of unique randNums per time, just not how many. If we replaced randNums with just some random N, even if the client doesn't know what N is, it can detect replication (since it's just 1 value and the client knows l and t).
+client_in(client, l, t)
+client_out(n, localtime, l, t)
+rand(n, l, t)
+randNums(m, l, t)
+randNums(m, l, t) :- choose((l, t), (n)), nat(n), m < n # If the random num is N, this relation contains N unique int entries
+rand(n, l, t) :- client_in(client, l, t), nat(n), choose((client, l, t), (n))
+rand(n, l, t) :- randNums(m), choose((m, l, t), (n))
+client_out(n, t, client, t') :- client_in(client, l, t), rand(n, l, t), choose(_, t')
+

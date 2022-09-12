@@ -102,4 +102,3 @@ MaxNum(max<n>, l, t) :- numBuffer(n, l, t)
 delayed(c, n, l, t) :- num(n, l, t), client_in(c, l, t), choose(_, t') # send message with current num into future
 client_out(payload, client, t') :- delayed(client, n, l, t), MaxNum(nMax, l, t), n >= nMax + 10, choose(_, t')
 
-
