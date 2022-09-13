@@ -72,8 +72,8 @@ MaxReceivedBallotNum(max<num>, l, t) :- receivedBallots(_, num, l, t)
 MaxReceivedBallot(max<id>, num, l, t) :- MaxReceivedBallotNum(num, l, t), receivedBallots(id, num, l, t)
 IsLeader(l, t) :- CountMatchingP1bs(c, l, t), quorum(size), c >= size, id(i), ballot(num, l, t), MaxReceivedBallot(maxId, maxNum, l, t), ballotGeq(i, num, maxId, maxNum)
 
-# send heartbeat if we're the leader
-iAmLeader(t', proposerID, t') :- IsLeader(l, t), proposers(proposerID), id(self), self != proposerID, choose(_, t')
+# send heartbeat if we're the leader. Note: Also send to self, since re-election is triggered if no iAmLeader message is recorded
+iAmLeader(t', proposerID, t') :- IsLeader(l, t), proposers(proposerID), choose(_, t')
 LatestIAmLeader(max<arrivalTime>, l, t) :- iAmLeader(arrivalTime, l, t)
 LeaderExpired(l, t) :- LatestIAmLeader(arrivalTime, l, t), leaderTimeout(timeout), t - arrivalTime > timeout
 # send timeout message with unknown arrival time
