@@ -47,7 +47,6 @@ p1bLog(i, payload, slot, payloadBallotID, payloadBallotNum, ballotID, ballotNum,
 
 
 ######################## reply to p2a
-ballots(id, num, l, t) :- p2a(_, _, _, id, num, l, t) # NOTE: unnecessary
 # Any rule that uses MaxBallot is guaranteed to only run once all ballots have been processed
 log(payload, slot, ballotID, ballotNum, l, t) :- p2a(_, payload, slot, ballotID, ballotNum, l, t), MaxBallot(maxID, maxNum, l, t), ballotGeq(ballotID, ballotNum, maxID, maxNum) # NOTE: Can just use equal
 p2b(i, payload, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, proposerID, t') :- p2a(proposerID, payload, slot, ballotID, ballotNum, l, t), id(i), MaxBallot(maxBallotID, maxBallotNum, l, t), choose(_, t')

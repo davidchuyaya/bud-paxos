@@ -57,6 +57,11 @@ p2a(proposerID, payload, slot, ballotID, ballotNum, l, t) # proposerID is the lo
 p2b(acceptorID, payload, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t)
 timeout(l, t) # Assume starts with a fact. async channel that tells us when to resend p1a
 iAmLeader(ballotID, ballotNum, arrivalTime, l, t)
+
+replicaToAcceptor(r, ogAcceptor)
+numP1bsMerged(n, ogAcceptor, ballotID, ballotNum, l, t)
+numReplicas(n)
+p1bMerged(ogAcceptor, logSize, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t)
 ######################## end relation definitions
 
 
@@ -70,6 +75,9 @@ payloads(p, l, t') :- payloads(p, l, t), succ(t, t')
 iAmLeader(i, n, arrivalTime, l, t') :- iAmLeader(i, n, arrivalTime, l, t), succ(t, t')
 
 
+# Merge. Replace all usage of p1b with p1bMerged
+numP1bsMerged(count<acceptor>, ogAcceptor, ballotID, ballotNum, l, t) :- p1b(acceptor, logSize, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t), replicaToAcceptor(acceptor, ogAcceptor) # count doesn't need to be over acceptor, can be over all remaining columns
+p1bMerged(ogAcceptor, sum<logSize>, ballotID, ballotNum, max<maxBallotID>, max<maxBallotNum>, l, t) :- p1b(acceptor, logSize, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t), replicaToAcceptor(acceptor, ogAcceptor), numP1bsMerged(n, ogAcceptor, ballotID, ballotNum, l, t), numReplicas(n)
 ######################## stable leader election
 RelevantP1bs(acceptorID, logSize, l, t) :- p1b(acceptorID, logSize, i, num, _, _, l, t), id(i), ballot(num, l, t)
 CountMatchingP1bs(count<acceptorID>, l, t) :- RelevantP1bs(acceptorID, _, l, t)

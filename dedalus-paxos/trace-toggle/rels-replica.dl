@@ -1,0 +1,50 @@
+# File structure: Each line = relation we had to add "replica" column to. Each new paragraph starst with the parents of that relation, propagating until all necessary relations have the replica column.
+# Rules:
+# 1. Ignore read-only EDBs. All replicas can read the same values.
+
+IsLeader(l, t)
+
+# 1. IsLeader:
+CountMatchingP1bs(c, l, t)
+ballot(num, l, t)
+MaxReceivedBallot(maxId, maxNum, l, t)
+
+# 2. CountMatchingP1bs: 
+RelevantP1bs(acceptorID, logSize, l, t)
+# 2. ballot:
+NewBallot(r, newNum, l, t)
+# 2. MaxReceivedBallot:
+MaxReceivedBallotNum(max<num>, l, t) 
+receivedBallots(id, num, l, t)
+
+# 3. RelevantP1bs:
+p1b(acceptorID, logSize, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t)
+# 3. NewBallot:
+# 3. receivedBallots:
+p2b(acceptorID, payload, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t)
+iAmLeader(ballotID, ballotNum, arrivalTime, l, t)
+
+# 4. p1b
+p1a(proposerID, ballotID, ballotNum, l, t)
+LogSize(size, l, t)
+MaxBallot(id, num, l, t)
+# 4. p2b
+p2a(proposerID, payload, slot, ballotID, ballotNum, l, t) # Note: Stops here. Maps from slot number to replica 
+# 4. iAmLeader
+
+# 5. p1a
+timeout(l, t)
+LeaderExpired(l, t)
+# 5. LogSize
+log(payload, slot, ballotID, ballotNum, l, t) # Note: Stops here. Maps from slot number to replica
+# 5. MaxBallot
+MaxBallotNum(num, l, t)
+ballots(id, num, l, t) # Note: acceptors' ballots
+
+# 6. timeout
+# 6. LeaderExpired
+LatestIAmLeader(arrivalTime, l, t)
+# 6. MaxBallotNum
+# 6. ballots
+
+# TODO: What about relations that read from replicas? We're only analyzing parent relations here.

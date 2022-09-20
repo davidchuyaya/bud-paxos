@@ -1,0 +1,33 @@
+# When does waiting for n replicas to all respond fail (to terminate)?
+
+# yes/no channel example (why we can't wait for all responses from all replicas). Proposers 1,2. Proposer 1 sends "x", proposer 2 sends "y" concurrently. Proposer 1 expects either "yes" or "no", will count for n responses across replicas. Interweaving might mean that it will never count n of either response.
+proposer_set(proposer, value, l, t)
+proposer_check_match(proposer, value, l, t)
+state(value, l, t)
+NewState(value, l, t)
+set_ack(l, t)
+match_yes(l, t)
+match_no(l, t)
+# setting value
+NewState(value, l, t) :- proposer_set(_, value, l, t)
+set_ack(proposer, t') :- proposer_set(proposer, _, l, t), choose(_, t')
+state(value, l, t') :- state(value, l, t), ¬NewState(_, l, t), succ(t, t')
+state(value, l, t') :- NewState(value, l, t), succ(t, t')
+match_yes(proposer, t') :- proposer_check_match(proposer, value, l, t), state(value, l, t), choose(_, t')
+match_no(proposer, t') :- proposer_check_match(proposer, value, l, t), ¬state(value, l, t), choose(_, t')
+
+# variable number of responses. Can't just wait for 1 response from each replica
+proposer_set(proposer, value, l, t)
+proposer_check(proposer, l, t)
+state(value, l, t)
+NewState(value, l, t)
+set_ack(l, t)
+match(l, t)
+# setting value
+NewState(value, l, t) :- proposer_set(_, value, l, t)
+set_ack(proposer, t') :- proposer_set(proposer, _, l, t), choose(_, t')
+state(value, l, t') :- state(value, l, t), ¬NewState(_, l, t), succ(t, t')
+state(value, l, t') :- NewState(value, l, t), succ(t, t')
+match(proposer, t') :- proposer_check(proposer, l, t), state(value, l, t), nat(n), n < value, choose(_, t') # send "value" number of responses
+
+# Idea: Seems waiting for n responses is ok only if the number/channel of response is independent of the replicated state
