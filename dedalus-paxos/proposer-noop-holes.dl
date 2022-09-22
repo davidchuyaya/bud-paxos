@@ -42,7 +42,7 @@ proposedLog(payload, slot, l, t) # potentially uncommitted entries. Re-create on
 payloads(payload, l, t) # all payloads ever received from client. On leader re-election, re-propose whatever isn't in the p1bs
 MinLogHole(slot, l, t) # slot num of smallest hole in log
 ChosenPayload(payload, l, t) # payload to propose in this timestep
-CountMatchingP2bs(payload, slot, c, l, t) # number of p2bs per entry that still have us as leader
+CountMatchingP2bs(payload, slot, c, id, num, l, t) # number of p2bs per entry, per ballot
 
 # IDBs introduced for hole-filling
 P1bQuorumReached(l, t) # true if we've just become the leader and a quorum of p1b logs have been received. Used with canSendP2a to figur eout if we're in the log-repair or p2a phase
@@ -151,6 +151,6 @@ maxProposedSlot(s', l, t') :- maxProposedSlot(s, l, t), ChosenPayload(_, l, t), 
 
 
 ######################## process p2bs
-CountMatchingP2bs(payload, slot, count<acceptorID>, l, t) :- p2b(acceptorID, payload, slot, i, num, _, _, l, t), id(i), ballot(num, l, t) # only count p2bs if the acceptor thinks we're the leader. Ensures p2bs are "up-to-date"
+CountMatchingP2bs(payload, slot, count<acceptorID>, i, num, l, t) :- p2b(acceptorID, payload, slot, i, num, _, _, l, t)
 client_out(payload, slot, l, t) :- CountMatchingP2bs(payload, slot, c, l, t), quorum(size), c >= size
 ######################## end process p2bs
