@@ -1,0 +1,27 @@
+######################## relation definitions
+# EDB
+acceptors(id)
+acceptorPartition(id, p)
+slotPartition(s, p)
+decoupledProposer(p)
+quorum(size)
+
+# IDB
+client_out(payload, slot, l, t)
+
+CountMatchingP2bs(payload, slot, c, id, num, l, t) # number of p2bs per entry, per ballot
+
+p2aBuffer(proposerID, payload, slot, ballotID, ballotNum, l, t)
+p2a(proposerID, payload, slot, ballotID, ballotNum, l, t)
+p2b(acceptorID, payload, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t)
+######################## end relation definitions
+
+p2b(a, p, s, i, n, mi, mn, l, t') :- p2b(a, p, s, i, n, mi, mn, l, t), succ(t, t')
+
+receivedBallots(maxBallotID, maxBallotNum, l', t') :- p2b(_, _, _, _, _, maxBallotID, maxBallotNum, l, t), decoupledProposer(l'), choose(_, t')
+p2a(i, no, slot, i, num, p, t') :- p2aBuffer(i, no, slot, i, num, l, t), acceptors(a), slotPartition(slot, p), acceptorPartition(a, p), choose(_, t')
+
+######################## process p2bs
+CountMatchingP2bs(payload, slot, count<acceptorID>, i, num, l, t) :- p2b(acceptorID, payload, slot, i, num, _, _, l, t)
+client_out(payload, slot, l, t) :- CountMatchingP2bs(payload, slot, c, l, t), quorum(size), c >= size
+######################## end process p2bs

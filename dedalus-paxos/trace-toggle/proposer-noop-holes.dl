@@ -128,6 +128,8 @@ ProposedSlots(slot, l, t) :- proposedLog(_, slot, l, t)
 ProposedSlots(slot, l, t) :- ResentEntries(_, slot, l, t) # ProposedSlots required in addition to proposedLog because ResentEntries' slots are not added to proposedLog until next timestep
 maxProposedSlot(max<slot>, l, t) :- ProposedSlots(slot, l, t)
 FilledHoles(no, s, l, t) :- noop(no), nat(s), ¬ProposedSlots(s, l, t), maxProposedSlot(maxSlot, l, t), s < maxSlot, P1bQuorumReached(r, l, t), ¬canSendP2a(r, l, t), slotPartition(s, r)
+# alternatively
+FilledHoles(no, s, l, t) :- noop(no), nat(s), ¬ProposedSlots(s, l, t), maxProposedSlot(maxSlot, l, t), s < maxSlot, P1bQuorumReached(r, l, t), ¬canSendP2a(r, l, t), slotPartition(s, r), P1bQuorumReached(r2, l, t), ¬canSendP2a(r2, l, t), slotPartition(maxSlot, r2)
 proposedLog(no, s, l, t') :- FilledHoles(no, s, l, t), succ(t, t')
 p2a(i, payload, slot, i, num, a, t') :- FilledHoles(no, slot, l, t), id(i), ballot(r, num, l, t), acceptors(a), choose(_, t'), slotPartition(slot, r), acceptorPartition(a, r)
 
@@ -140,18 +142,13 @@ proposedLog(p, s, l, t') :- proposedLog(p, s, l, t), IsLeader(r, l, t), succ(t, 
 ######################## send p2as 
 # assign a slot
 ChosenPayload(choose<payload>, l, t) :- payloads(payload, l, t), ¬proposedLog(payload, _, l, t)
-# TODO: Stopped here. We pushed down canSendP2a to uses of ChosenPayload (since ChosenPayload can't join with it). Then we had to decide whether slotPartition had to join with slot in maxProposedSlot or s' (slot+1). If we join with slot, then it's unsafe (p2a sent for partitions where we are not the leader). If we join with s', then maxProposedSlot is not guaranteed to exist, since we might not be the leader of both consecutive partitions. 
-p2a(i, payload, s', i, num, a, t') :- ChosenPayload(payload, l, t), maxProposedSlot(slot, l, t), s' = slot + 1, id(i), ballot(r, num, l, t), acceptors(a), choose(_, t'), canSendP2a(r, l, t)
+p2a(i, payload, s', i, num, a, t') :- ChosenPayload(payload, l, t), maxProposedSlot(slot, l, t), s' = slot + 1, id(i), ballot(r, num, l, t), acceptors(a), choose(_, t'), canSendP2a(r, l, t), slotPartition(s', r)
 proposedLog(payload, s', l, t') :- ChosenPayload(payload, l, t), maxProposedSlot(slot, l, t), s' = slot + 1, succ(t, t'), canSendP2a(r, l, t), slotPartition(s', r)
-
-# persist current slot if not used, otherwise increment. Don't persist if not leader
-maxProposedSlot(s, l, t') :- maxProposedSlot(s, l, t), IsLeader(r, l, t), succ(t, t'), slotPartition(s, r)
-maxProposedSlot(s', l, t') :- maxProposedSlot(s, l, t), ChosenPayload(_, l, t), s' = s + 1, IsLeader(r, l, t), succ(t, t'), canSendP2a(r, l, t), slotPartition(s', r)
 ######################## end send p2as 
 
 
 
 ######################## process p2bs
-CountMatchingP2bs(payload, slot, count<acceptorID>, l, t) :- p2b(acceptorID, payload, slot, i, num, _, _, l, t), id(i), ballot(num, l, t) # only count p2bs if the acceptor thinks we're the leader. Ensures p2bs are "up-to-date"
+CountMatchingP2bs(payload, slot, count<acceptorID>, l, t) :- p2b(acceptorID, payload, slot, i, num, _, _, l, t), id(i), ballot(r, num, l, t), slotPartition(slot, r) # only count p2bs if the acceptor thinks we're the leader. Ensures p2bs are "up-to-date"
 client_out(payload, slot, l, t) :- CountMatchingP2bs(payload, slot, c, l, t), quorum(size), c >= size
 ######################## end process p2bs
