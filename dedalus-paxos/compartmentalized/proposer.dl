@@ -58,6 +58,7 @@ maxProposedSlot(slot, l, t)
 FilledHoles(no, slot, l, t)
 
 # NOTE: Start modified
+p1aBuffer(p, proposerID, ballotID, ballotNum, l, t) # p1a messages before broadcasting to acceptors
 p1a(p, proposerID, ballotID, ballotNum, l, t) # proposerID is the location of the proposer
 p1b(p, acceptorID, logSize, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t) # NOTE: logSize necessary because p1b can't send entire log back in 1 msg
 # NOTE: End modified
@@ -87,9 +88,7 @@ receivedBallots(maxBallotID, maxBallotNum, l, t) :- p1b(_, _, _, _, _, maxBallot
 # NOTE: End modified
 MaxReceivedBallotNum(max<num>, l, t) :- receivedBallots(_, num, l, t)
 MaxReceivedBallot(max<id>, num, l, t) :- MaxReceivedBallotNum(num, l, t), receivedBallots(id, num, l, t)
-# NOTE: Start modified
-IsLeader(l, t) :- CountMatchingP1bsPartitions(c, l, t), quorum(size), c >= size, id(i), ballot(num, l, t), MaxReceivedBallot(maxId, maxNum, l, t), ballotGeq(i, num, maxId, maxNum)
-# NOTE: End modified
+IsLeader(l, t) :- CountMatchingP1bs(c, l, t), quorum(size), c >= size, id(i), ballot(num, l, t), MaxReceivedBallot(maxId, maxNum, l, t), ballotGeq(i, num, maxId, maxNum)
 
 # send heartbeat if we're the leader. Note: Also send to self, since re-election is triggered if no iAmLeader message is recorded
 iAmLeader(i, num, t', proposerID, t') :- id(i), ballot(num, l, t), IsLeader(l, t), proposers(proposerID), choose(_, t')
@@ -100,8 +99,8 @@ timeout(l, t') :- timeout(l, t), choose(_, t')
 
 # Resend p1a if we waited a random amount of time (timeout) AND leader heartbeat timed out. Send NewBallot if it was just triggered (ballot is updated in t+1), otherwise send ballot.
 # NOTE: Start modified
-p1a(p, i, i, num, p, t') :- id(i), NewBallot(num, l, t), timeout(l, t), LeaderExpired(l, t), acceptors(a), acceptorPartition(a, p), choose(_, t')
-p1a(p, i, i, num, p, t') :- id(i), ballot(num, l, t), ¬NewBallot(_, l, t), timeout(l, t), LeaderExpired(l, t), acceptors(a), acceptorPartition(a, p), choose(_, t')
+p1aBuffer(p, i, i, num, p, t') :- id(i), NewBallot(num, l, t), timeout(l, t), LeaderExpired(l, t), proxyLeaderPartitions(_, p), choose(_, t')
+p1aBuffer(p, i, i, num, p, t') :- id(i), ballot(num, l, t), ¬NewBallot(_, l, t), timeout(l, t), LeaderExpired(l, t), proxyLeaderPartitions(_, p), choose(_, t')
 # NOTE: End modified
 
 # ballot = max + 1. If anothe proposer sends iAmLeader, that contains its ballot, which updates our ballot (to be even higher), so we are no longer the leader (RelevantP1bs no longer relevant)

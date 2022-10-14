@@ -11,6 +11,8 @@ client_out(payload, slot, l, t)
 
 CountMatchingP2bs(payload, slot, c, id, num, l, t) # number of p2bs per entry, per ballot
 
+p1aBuffer(p, proposerID, ballotID, ballotNum, l, t) # p1a messages before broadcasting to acceptors
+p1a(p, proposerID, ballotID, ballotNum, l, t)
 p2aBuffer(proposerID, payload, slot, ballotID, ballotNum, l, t)
 p2a(proposerID, payload, slot, ballotID, ballotNum, l, t)
 p2b(acceptorID, payload, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t)
@@ -18,6 +20,7 @@ p2b(acceptorID, payload, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, l
 
 p2b(a, p, s, i, n, mi, mn, l, t') :- p2b(a, p, s, i, n, mi, mn, l, t), succ(t, t')
 
+p1a(p, i, i, num, p, t') :- p1aBuffer(p, i, i, num, l, t), acceptorPartition(_, p), choose(_, t')
 receivedBallots(maxBallotID, maxBallotNum, l', t') :- p2b(_, _, _, _, _, maxBallotID, maxBallotNum, l, t), decoupledProposer(l'), choose(_, t')
 p2a(i, no, slot, i, num, p, t') :- p2aBuffer(i, no, slot, i, num, l, t), acceptors(a), slotPartition(slot, p), acceptorPartition(a, p), choose(_, t')
 

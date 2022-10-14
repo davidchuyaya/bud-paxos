@@ -40,7 +40,6 @@ P1bResentEntries(payload, slot, l, t) # entries to resend p2as for, based on unc
 
 proposedLog(payload, slot, l, t) # potentially uncommitted entries. Re-create on re-election 
 payloads(payload, l, t) # all payloads ever received from client. On leader re-election, re-propose whatever isn't in the p1bs
-MinLogHole(slot, l, t) # slot num of smallest hole in log
 ChosenPayload(payload, l, t) # payload to propose in this timestep
 CountMatchingP2bs(payload, slot, c, id, num, l, t) # number of p2bs per entry, per ballot
 
@@ -104,7 +103,7 @@ RelevantP1bLogs(acceptorID, payload, slot, payloadBallotID, payloadBallotNum, l,
 
 # cannot send new p2as until all p1b acceptor logs are PROCESSED; otherwise might miss pre-existing entry
 P1bLogFromAcceptor(acceptorID, count<slot>, l, t) :- RelevantP1bLogs(acceptorID, _, slot, _, _, l, t)
-P1bLogFromAcceptor(acceptorID, 0, l, t) :- RelevantP1bs(acceptorID, _, l, t), ¬RelevantP1bLogs(acceptorID, _, _, _, _, l, t)
+P1bLogFromAcceptor(acceptorID, 0, l, t) :- ¬RelevantP1bLogs(acceptorID, _, _, _, _, l, t)
 P1bNumAcceptorsLogReceived(count<acceptorID>, l, t) :- P1bLogFromAcceptor(acceptorID, receivedCount, l, t), RelevantP1bs(acceptorID, logSize, l, t), receivedCount == logSize
 P1bQuorumReached(l, t) :- P1bNumAcceptorsLogReceived(c, l, t), quorum(size), c >= size, IsLeader(l, t)
 # logs don't count as all received until NEXT TIMESTEP; all p1b resends should've happened before then. If IsLeader is false, this is reset. In the timestep after that, we propose with a new ballot, so no quorum can be reached with p1b logs, until we actually win phase 1 again & receive all logs.
@@ -129,7 +128,7 @@ ProposedSlots(slot, l, t) :- ResentEntries(_, slot, l, t) # ProposedSlots requir
 maxProposedSlot(max<slot>, l, t) :- ProposedSlots(slot, l, t)
 FilledHoles(no, s, l, t) :- noop(no), nat(s), ¬ProposedSlots(s, l, t), maxProposedSlot(maxSlot, l, t), s < maxSlot, P1bQuorumReached(l, t), ¬canSendP2a(l, t)
 proposedLog(no, s, l, t') :- FilledHoles(no, s, l, t), succ(t, t')
-p2a(i, payload, slot, i, num, a, t') :- FilledHoles(no, slot, l, t), id(i), ballot(num, l, t), acceptors(a), choose(_, t')
+p2a(i, no, slot, i, num, a, t') :- FilledHoles(no, slot, l, t), id(i), ballot(num, l, t), acceptors(a), choose(_, t')
 
 # only persist proposedLog if we're the leader. This way, when we lose election, the proposals are refreshed based on p1bs
 proposedLog(p, s, l, t') :- proposedLog(p, s, l, t), IsLeader(l, t), succ(t, t') #TODO can just add ballot column
