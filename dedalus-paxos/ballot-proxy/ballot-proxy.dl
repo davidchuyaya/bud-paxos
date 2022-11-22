@@ -1,0 +1,72 @@
+# ballot-proxy: the node the propsoers send p1a to
+
+######################## relation definitions
+# EDB
+numPartitions(p)
+proxyPartitions(proxy, p)
+zero(z) # EDB, contains only 0. Created so MaxAssignedOrder is at least always 0.
+
+# IDB
+AssignedIndices(i, l, t)
+indexedP1as(i, proposerID, id, num, l, t)
+CountP1as(c, proposerID, ballotID, ballotNum, l, t)
+CanCommitP1as(proposerID, ballotID, ballotNum, l, t)
+MaxAssignedIndex(i, l, t)
+NextUnorderedP1a(proposerID, id, num, l, t)
+
+# new channels
+p1aVote(p, proposerID, ballotID, ballotNum, l, t)
+p1aCommit(p, order, proposerID, ballotID, ballotNum, l, t)
+######################## end relation definitions
+
+p1aVote(p, proposerID, i, n, l, t') :- p1aVote(p, proposerID, i, n, l, t), succ(t, t')
+indexedP1as(i, proposerID, i, n, l, t') :- indexedP1as(i, proposerID, i, n, l, t), succ(t, t')
+
+
+AssignedIndices(zero, l, t) :- zero(z)
+AssignedIndices(i, l, t) :- indexedP1as(i, _, _, _, l, t)
+MaxAssignedIndex(max<order>, l, t) :- AssignedOrders(order, l, t)
+
+CountP1as(count<p>, proposerID, ballotID, ballotNum, l, t) :- p1aVote(p, proposerID, ballotID, ballotNum, l, t)
+CanCommitP1as(proposerID, ballotID, ballotNum, l, t) :- CountP1as(c, proposerID, ballotID, ballotNum, l, t), numPartitions(c)
+
+# shorthand for choose 1st column, then join & group-by, then choose 2nd column, etc
+NextUnorderedP1a(choose<proposerID, id, n>, l, t) :- CanCommitP1as(proposerID, id, n, l, t), ¬indexedP1as(_, proposerID, id, n, l, t)
+indexedP1as(i', proposerID, i, n, l, t') :- NextUnorderedP1a(proposerID, id, n, l, t), MaxAssignedIndex(i, l, t), i' = i + 1 
+
+# tell partitions to begin using the new p1a once all replicas have ACK'd
+p1aCommit(p, order, proposerID, id, num, p, t') :- indexedP1as(order, proposerID, id, num, l, t), proxyPartitions(l, p), choose(_, t')
+
+
+
+
+# If there were multiple replicated relations (say p3a(x, y, z, l, t) is replicated), add the following rules:
+# EDB
+replicatedInputs(n) # range [0, n) for n replicated inputs
+
+# IDB
+NextReplicatedInput(n, l, t)
+
+CountP3as(c, x, y, z, l, t)
+CanCommitP3as(x, y, z, l, t)
+indexedP3as(i, x, y, z, l, t)
+NextUnorderedP3a(x, y, z, l, t)
+
+# new channels
+p3aVote(p, x, y, z, l, t)
+p3aCommit(p, order, x, y, z, l, t)
+######################## end relation definitions
+
+p3a(x, y, z, l, t') :- p3a(x, y, z, l, t), succ(t, t')
+indexedP3as(i, x, y, z, l, t') :- indexedP3as(order, x, y, z, l, t), succ(t, t')
+
+CountP3as(count<p>, x, y, z, l, t) :- p3aVote(p, x ,y, z, l, t)
+CanCommitP3as(x, y, z, l, t) :- CountP3as(c, x, y, z, l, t), numPartitions(c)
+
+AssignedIndices(order, l, t) :- indexedP3as(order, _, _, _, l, t)
+NextUnorderedP3a(choose<x, y, z>, l, t) :- CanCommitP3as(x, y, z, l, t), ¬indexedP3as(_, x, y, z, l, t)
+NextReplicatedInput(choose<n>, l, t) :- replicatedInputs(n)
+indexedP1as(i', proposerID, id, n, l, t') :- NextUnorderedP1a(proposerID, id, n, l, t), MaxAssignedIndex(i, l, t), i' = i + 1, NextReplicatedInput(0, l, t)
+indexedP3as(i', x, y, z, l, t') :- NextUnorderedP3a(x, y, z, l, t), MaxAssignedIndex(i, l, t), i' = i + 1, NextReplicatedInput(1, l, t)
+
+p3aCommit(p, order, x, y, z, p, t') :- indexedP3as(order, x, y, z, l, t), proxyPartitions(l, p), choose(_, t')

@@ -1,4 +1,4 @@
-# proposer that only writes p2as to acceptors for which it won phase 1
+# proposer
 # Syntax note: Capital = scratch (not persisted)
 # Assumption: count on empty relation returns 0. Undefined if there are group-by attributes (returns null in SQL for those columns)
 
@@ -6,6 +6,9 @@
 # EDB
 id(id) # Used in ballots, but also is proposer's physical location
 acceptors(id)
+acceptorProxy(a, p)
+slotPartition(a, s, p)
+numPartitions(n)
 proposers(id)
 quorum(size)
 ballotGeq(id1, num1, id2, num2) # true if num1 >= num2 or (num1 = num2 and id1 >= id2)
@@ -28,7 +31,6 @@ MaxReceivedBallotNum(num, l, t)
 MaxReceivedBallot(id, num, l, t) # largest ballot seen in p1b or p2b
 LatestIAmLeader(arrivalTime, l, t)
 LeaderExpired(l, t)
-governedAcceptors(a, id, num, l, t) # acceptors that are "governed" by this proposer (believe this proposer is the leader)
 
 RelevantP1bLogs(acceptorID, payload, slot, payloadBallotID, payloadBallotNum, l, t) # relevant = has our ballot
 P1bLogFromAcceptor(acceptorID, c, l, t) # count of p1b entries received from each acceptor
@@ -51,8 +53,8 @@ maxProposedSlot(slot, l, t)
 FilledHoles(no, slot, l, t)
 
 p1a(proposerID, ballotID, ballotNum, l, t) # proposerID is the location of the proposer
-p1b(acceptorID, logSize, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t) # NOTE: logSize necessary because p1b can't send entire log back in 1 msg
-p1bLog(acceptorID, payload, slot, payloadBallotID, payloadBallotNum, ballotID, ballotNum, l, t)
+p1b(p, order, acceptorID, logSize, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t) # NOTE: logSize necessary because p1b can't send entire log back in 1 msg
+p1bLog(p, order, acceptorID, payload, slot, payloadBallotID, payloadBallotNum, ballotID, ballotNum, l, t)
 p2a(proposerID, payload, slot, ballotID, ballotNum, l, t) # proposerID is the location of the proposer
 p2b(acceptorID, payload, slot, ballotID, ballotNum, maxBallotID, maxBallotNum, l, t)
 timeout(l, t) # Assume starts with a fact. async channel that tells us when to resend p1a
@@ -61,23 +63,24 @@ iAmLeader(ballotID, ballotNum, arrivalTime, l, t)
 
 
 
-p1b(a, l, i, n, mi, mn, l, t') :- p1b(a, l, i, n, mi, mn, l, t), succ(t, t')
-p1bLog(a, p, s, pi, pn, i, n, l, t') :- p1bLog(a, p, s, pi, pn, i, n, l, t), succ(t, t')
+p1b(p, o, a, l, i, n, mi, mn, l, t') :- p1b(p, o, a, l, i, n, mi, mn, l, t), succ(t, t')
+p1bLog(pa, o, a, p, s, pi, pn, i, n, l, t') :- p1bLog(pa, o, a, p, s, pi, pn, i, n, l, t), succ(t, t')
 p2b(a, p, s, i, n, mi, mn, l, t') :- p2b(a, p, s, i, n, mi, mn, l, t), succ(t, t')
 receivedBallots(i, n, l, t') :- receivedBallots(i, n, l, t), succ(t, t')
-governedAcceptors(a, i, n, l, t') :- governedAcceptors(a, i, n, l, t), succ(t, t')
 payloads(p, l, t) :- client_in(p, l, t)
 payloads(p, l, t') :- payloads(p, l, t), succ(t, t')
 iAmLeader(i, n, arrivalTime, l, t') :- iAmLeader(i, n, arrivalTime, l, t), succ(t, t')
 
 
 ######################## stable leader election
-# acceptors that believe this proposer is the leader (max ballot = proposer's ballot)
-governedAcceptors(acceptorID, i, num, l, t) :- p1b(acceptorID, _, i, num, i, num, l, t), id(i), ballot(num, l, t)
-RelevantP1bs(acceptorID, logSize, l, t) :- p1b(acceptorID, logSize, i, num, _, _, l, t), id(i), ballot(num, l, t)
+CountOrderedP1bs(count<p>, order, a, i, n, mi, mn, l, t) :- p1b(p, order, a, _, i, n, mi, mn, l, t)
+SummedLogSize(order, a, sum<logSize>, i, n, mi, mn, l, t) :- p1b(_, order, a, logSize, i, n, mi, mn, l, t)
+NextP1b(a, logSize, i, n, mi, mn, l, t) :- CountOrderedP1bs(c, order, a, i, n, mi, mn, l, t), numPartitions(c), SummedLogSize(order, a, logSize, i, n, mi, mn, l, t)
+
+RelevantP1bs(acceptorID, logSize, l, t) :- NextP1b(acceptorID, logSize, i, num, _, _, l, t), id(i), ballot(num, l, t)
 CountMatchingP1bs(count<acceptorID>, l, t) :- RelevantP1bs(acceptorID, _, l, t)
 receivedBallots(id, num, l, t) :- iAmLeader(id, num, _, l, t)
-receivedBallots(maxBallotID, maxBallotNum, l, t) :- p1b(_, _, _, _, maxBallotID, maxBallotNum, l, t)
+receivedBallots(maxBallotID, maxBallotNum, l, t) :- NextP1b(_, _, _, _, maxBallotID, maxBallotNum, l, t)
 receivedBallots(maxBallotID, maxBallotNum, l, t) :- p2b(_, _, _, _, _, maxBallotID, maxBallotNum, l, t)
 MaxReceivedBallotNum(max<num>, l, t) :- receivedBallots(_, num, l, t)
 MaxReceivedBallot(max<id>, num, l, t) :- MaxReceivedBallotNum(num, l, t), receivedBallots(id, num, l, t)
@@ -91,8 +94,8 @@ LeaderExpired(l, t) :- LatestIAmLeader(arrivalTime, l, t), leaderTimeout(timeout
 timeout(l, t') :- timeout(l, t), choose(_, t')
 
 # Resend p1a if we waited a random amount of time (timeout) AND leader heartbeat timed out. Send NewBallot if it was just triggered (ballot is updated in t+1), otherwise send ballot.
-p1a(i, i, num, a, t') :- id(i), NewBallot(num, l, t), timeout(l, t), LeaderExpired(l, t), acceptors(a), choose(_, t')
-p1a(i, i, num, a, t') :- id(i), ballot(num, l, t), ¬NewBallot(_, l, t), timeout(l, t), LeaderExpired(l, t), acceptors(a), choose(_, t')
+p1a(p, i, i, num, p, t') :- id(i), NewBallot(num, l, t), timeout(l, t), LeaderExpired(l, t), acceptors(a), slotPartition(a, _, p), choose(_, t')
+p1a(p, i, i, num, p, t') :- id(i), ballot(num, l, t), ¬NewBallot(_, l, t), timeout(l, t), LeaderExpired(l, t), acceptors(a), slotPartition(a, _, p), choose(_, t')
 
 # ballot = max + 1. If anothe proposer sends iAmLeader, that contains its ballot, which updates our ballot (to be even higher), so we are no longer the leader (RelevantP1bs no longer relevant)
 NewBallot(newNum, l, t) :- MaxReceivedBallot(maxId, maxNum, l, t), id(i), ballot(num, l, t), ballotGt(maxId, maxNum, i, num), newNum = maxNum + 1
@@ -124,7 +127,7 @@ P1bLargestEntryBallot(slot, max<payloadBallotID>, payloadBallotNum, l, t) :- P1b
 # makes sure that p2as cannot be sent yet; otherwise resent slots might conflict. Once p2as can be sent, a new p1b log might tell us to propose a payload for the same slot we propose (in parallel) for p2a, which violates an invariant.
 ResentEntries(payload, slot, l, t) :- P1bLargestEntryBallot(slot, payloadBallotID, payloadBallotNum, l, t), P1bMatchingEntry(payload, slot, _, payloadBallotID, payloadBallotNum, l, t), ¬proposedLog(_, slot, l, t), P1bQuorumReached(l, t), ¬canSendP2a(l, t)
 proposedLog(payload, slot, l, t') :- ResentEntries(payload, slot, l, t), succ(t, t') # must be succ because proposedLog is negated in ResentEntries
-p2a(i, payload, slot, i, num, a, t') :- ResentEntries(payload, slot, l, t), id(i), ballot(num, l, t), governedAcceptors(a, i, num, l, t), choose(_, t')
+p2a(i, payload, slot, i, num, p, t') :- ResentEntries(payload, slot, l, t), id(i), ballot(num, l, t), acceptors(a), slotPartition(a, slot, p), choose(_, t')
 
 # hole filling: if a slot is not in ResentEntries or proposedLog but it's smaller than max, then propose noop. Provides invariant that all holes are filled (proposed) by next timestep and we can just assign slots as current slot+1
 ProposedSlots(slot, l, t) :- proposedLog(_, slot, l, t)
@@ -132,7 +135,7 @@ ProposedSlots(slot, l, t) :- ResentEntries(_, slot, l, t) # ProposedSlots requir
 maxProposedSlot(max<slot>, l, t) :- ProposedSlots(slot, l, t)
 FilledHoles(no, s, l, t) :- noop(no), nat(s), ¬ProposedSlots(s, l, t), maxProposedSlot(maxSlot, l, t), s < maxSlot, P1bQuorumReached(l, t), ¬canSendP2a(l, t)
 proposedLog(no, s, l, t') :- FilledHoles(no, s, l, t), succ(t, t')
-p2a(i, no, slot, i, num, a, t') :- FilledHoles(no, slot, l, t), id(i), ballot(num, l, t), governedAcceptors(a, i, num, l, t), choose(_, t')
+p2a(i, no, slot, i, num, p, t') :- FilledHoles(no, slot, l, t), id(i), ballot(num, l, t), acceptors(a), slotPartition(a, slot, p), choose(_, t')
 
 # only persist proposedLog if we're the leader. This way, when we lose election, the proposals are refreshed based on p1bs
 proposedLog(p, s, l, t') :- proposedLog(p, s, l, t), IsLeader(l, t), succ(t, t') #TODO can just add ballot column
@@ -143,7 +146,7 @@ proposedLog(p, s, l, t') :- proposedLog(p, s, l, t), IsLeader(l, t), succ(t, t')
 ######################## send p2as 
 # assign a slot
 ChosenPayload(choose<payload>, l, t) :- payloads(payload, l, t), ¬proposedLog(payload, _, l, t), canSendP2a(l, t)
-p2a(i, payload, s', i, num, a, t') :- ChosenPayload(payload, l, t), maxProposedSlot(slot, l, t), s' = slot + 1, id(i), ballot(num, l, t), governedAcceptors(a, i, num, l, t), choose(_, t')
+p2a(i, payload, s', i, num, p, t') :- ChosenPayload(payload, l, t), maxProposedSlot(slot, l, t), s' = slot + 1, id(i), ballot(num, l, t), acceptors(a), slotPartition(a, s', p), choose(_, t')
 proposedLog(payload, s', l, t') :- ChosenPayload(payload, l, t), maxProposedSlot(slot, l, t), s' = slot + 1, succ(t, t')
 
 # persist current slot if not used, otherwise increment. Don't persist if not leader
