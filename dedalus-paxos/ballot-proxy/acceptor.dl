@@ -19,8 +19,9 @@ MaxBallot(p, id, num, l, t)
 processedIndices(p, i, l, t) # Initialized with i = 0 at each partition
 MaxProcessedIndex(p, i, l, t)
 NextP1a(p, order, proposerID, id, num, l, t)
+OutstandingVote(p, l, t) # true if there is a vote outstanding
 MaxReceivedCommit(p, i, l, t)
-Unfreeze(p, l, t)
+Unfreeze(p, l, t) # true if the acceptor is unfrozen
 
 # copied from proposer
 p1a(p, proposerID, ballotID, ballotNum, l, t)
@@ -55,8 +56,9 @@ MaxProcessedIndex(p, max<i>, l, t) :- processedIndices(p, i, l, t)
 NextP1a(p, next, proposerID, id, num, l, t) :- MaxProcessedIndex(p, i, l, t), next = i + 1, p1aCommit(p, next, proposerID, id, num, l, t)
 processedIndices(p, i, l, t') :- NextP1a(p, i, _, _, _, l, t), succ(t, t')
 # non-replicated inputs must wait until all outstanding p1as have been processed
+OutstandingVote(p, l, t) :- p1a(p, proposerID, ballotID, ballotNum, l, t), ¬p1aCommit(p, _, proposerID, ballotID, ballotNum, l, t)
 MaxReceivedCommit(p, max<i>, l, t) :- p1aCommit(p, i, _, _, _, l, t)
-Unfreeze(p, l, t) :- MaxProcessedIndex(p, i, l, t), MaxReceivedCommit(p, i, l, t) 
+Unfreeze(p, l, t) :- MaxProcessedIndex(p, i, l, t), MaxReceivedCommit(p, i, l, t), ¬OutstandingVote(p, l, t)
 
 # original code
 ballots(p, id, num, l, t) :- NextP1a(p, _, _, id, num, l, t)
