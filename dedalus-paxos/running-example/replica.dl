@@ -1,0 +1,33 @@
+# Receive signature + input
+# Store in local hashset
+# Sign input (expensive)
+# Send signed message back to leader
+
+
+######################## relation definitions
+# EDBs
+leader(l)
+sign(msg, sig, l) # sign(msg, l) = sig
+hash(value, h) # hash(value) = h
+
+# communication with replicas
+replicaWrite(client, value, l, t)
+replicaWriteACK(client, sig, value, l, t)
+replicaReadCollisions(client, hash, l, t)
+replicaReadCollisionsACK(client, sig, num, hash, l, t)
+
+# internal state
+hashset(hash, value, l, t)
+numCollisions(num, hash, l, t)
+
+######################## rules
+# persistence
+hashset(hash, value, l, t') :- hashset(hash, value, l, t), succ(t, t')
+
+# writes
+hashset(hash, value, l, t) :- replicaWrite(_, value, l, t), hash(value, hash)
+replicaWriteACK(client, sig, value, l', t') :- replicaWrite(client, value, l, t), sign(value, sig, l), leader(l'), choose(_, t')
+
+# reads
+numCollisions(count<value>, hash, l, t) :- replicaReadCollisions(_, hash, l, t), hashset(hash, value, l, t)
+replicaReadCollisionsACK(client, sig, num, hash, l', t') :- replicaReadCollisions(client, hash, l, t), numCollisions(num, hash, l, t), sign(hash, sig, l), leader(l'), choose(_, t')

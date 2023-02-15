@@ -1,0 +1,53 @@
+# Receive input
+# Sign input (expensive)
+# Broadcast signed message to participants
+# Receive replica outputs
+# Create signature certificate
+# Send certificate to client
+
+
+######################## relation definitions
+# EDBs
+replicas(r)
+numReplicas(n)
+sign(msg, sig, l) # sign(msg, l) = sig
+
+# client APIs
+in_write(client, value, l, t)
+out_write(cert, value, l, t) # certificate of signatures
+in_readCollisions(client, hash, l, t)
+out_readCollisions(cert, num, hash, l, t)
+
+# communication with replicas
+replicaWrite(client, value, l, t)
+replicaWriteACK(client, sig, value, l, t)
+replicaReadCollisions(client, hash, l, t)
+replicaReadCollisionsACK(client, sig, num, hash, l, t)
+
+# internal state
+writeACKs(client, sig, value, l, t)
+numWriteACKs(cnt, client, value, l, t)
+writeCert(client, cert, value, l, t)
+readCollisionACKs(client, sig, num, hash, l, t)
+numReadCollisionsACKs(cnt, client, num, hash, l, t)
+readCollisionsCert(client, cert, value, l, t)
+
+######################## rules
+# braodcasting to replicas
+replicaWrite(value, r, t') :- in_write(client, value, l, t), replicas(r), choose(_, t')
+replicaReadCollisions(client, hash, r, t') :- in_readCollisions(client, hash, l, t), replicas(r), choose(_, t')
+
+# persistence
+writeACKs(client, sig, value, l, t') :- writeACKs(client, sig, value, l, t), succ(t, t')
+readCollisionACKs(client, sig, num, hash, l, t') :- readCollisionACKs(client, sig, num, hash, l, t), succ(t, t')
+
+# replying to the client
+writeACKs(client, sig, value, l, t) :- replicaWriteACK(client, sig, value, l, t)
+readCollisionACKs(client, sig, num, hash, l, t) :- replicaReadCollisionsACK(client, sig, num, hash, l, t)
+numWriteACKs(count<client>, value, l, t) :- writeACKs(client, _, value, l, t)
+numReadCollisionsACKs(count<client>, num, hash, l, t) :- readCollisionACKs(client, _, num, hash, l, t)
+# create certificates
+writeCert(client, certificate<sig>, value, l, t) :- writeACKs(client, sig, value, l, t) # Assume existence of certificate<> aggregation
+readCollisionsCert(client, certificate<sig>, num, hash, l, t) :- readCollisionACKs(client, sig, num, hash, l, t)
+out_write(cert, value, client, t') :- writeCert(client, cert, value, l, t), numWriteACKs(cnt, value, l, t), numReplicas(cnt), choose(_, t')
+out_readCollisions(cert, num, hash, client, t') :- readCollisionsCert(client, cert, num, hash, l, t), numReadCollisionsACKs(cnt, num, hash, l, t), numReplicas(cnt), choose(_, t')
