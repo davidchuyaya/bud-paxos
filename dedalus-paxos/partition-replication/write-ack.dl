@@ -1,0 +1,49 @@
+# 1. counterexample to show that write ACKs and reads cannot be reliably distinguished. Whether the operation is a read/write is determined by opType. TODO: When modifying code to allow replicating "set", need to aggregate before sending back to the client.
+# "writeType" is an annotation that doesn't need to be provided: the client can just write a value that already exists in order to execute a "read". Seems that "read any" is an optimization that we can only apply under specific circumstances.
+# Note: Because 
+replicas(l)
+opTypes(opType) # enum: read, write
+writeType(w) # enum: write
+client_in(client, id, opType, value, l, t)
+client_out(id, value, l, t)
+idToClient(id, client, l, t)
+# store mappings from ID to location. 
+idToClient(id, client, l, t) :- client_in(client, id, _, _, l, t)
+idToClient(id, client, l, t') :- idToClient(id, client, l, t), succ(t, t')
+# relay to replicated component
+setIn(l, id, opType, value, l', t') :- client_in(_, id, opType, value, l, t), replicas(l'), choose(_, t')
+client_out(id, value, client, t') :- setOut(id, value, l, t), idToClient(id, client, l, t), choose(_, t')
+
+# replicas
+set(value, l, t)
+setIn(proxy, id, opType, value, l, t)
+setOut(id, value, l, t)
+set(value, l, t') :- set(value, l, t), succ(t, t')
+set(value, l, t) :- setIn(_, _, opType, value, l, t), writeType(opType)
+setOut(id, value, proxy, t') :- setIn(proxy, id, _, value, l, t), choose(_, t')
+
+
+
+# 2. Example without "writeType". Client disguises a read as a write with an existing value. Basically impossible to detect difference, have to do read-all & write-all here.
+replicas(l)
+client_in(client, id, value, l, t)
+client_out(id, value, l, t)
+idToClient(id, client, l, t)
+# store mappings from ID to location. 
+idToClient(id, client, l, t) :- client_in(client, id, _, _, l, t)
+idToClient(id, client, l, t') :- idToClient(id, client, l, t), succ(t, t')
+# relay to replicated component
+setIn(l, id, value, l', t') :- client_in(_, id, value, l, t), replicas(l'), choose(_, t')
+client_out(id, value, client, t') :- setOut(id, value, l, t), idToClient(id, client, l, t), choose(_, t')
+
+# replicas
+set(value, l, t)
+setIn(proxy, id, value, l, t)
+setOut(id, value, l, t)
+set(value, l, t') :- set(value, l, t), succ(t, t')
+set(value, l, t) :- setIn(_, _, value, l, t)
+setOut(id, value, proxy, t') :- setIn(proxy, id, value, l, t), choose(_, t')
+
+
+
+

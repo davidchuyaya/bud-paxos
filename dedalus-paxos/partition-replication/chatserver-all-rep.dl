@@ -1,0 +1,21 @@
+# server
+replicated chatMembers(p, c, l, t)
+replicated messages(p, m, l, t)
+receivedMessages(m, c, t') :- messages(p, m, l, t), chatMembers(p, c, l, t), choose(_, t') # merge
+
+# chat members
+# send chatMember packet to server
+self(c)
+server(s)
+persist receivedMessages(m, l, t)
+chatMembers(s, c, s, t') :- self(c), server(s), choose(_, t')
+
+
+# Correctness proof
+# Soundness counterexample: assume there's an extra fact in the replicated program downstream of chatMembers, in receivedMessages (M, C, T'). 
+# Soundness: Additional facts will be generated in line 6 (any rule with replicated relation on RHS). Because of line 14, for any fact (m, l, t) in receivedMessages, there will be a (m, l, t') for all t' > t in the original program, so additional facts in the replicated program will be squashed
+
+# Rewrite rules for replicated relation r:
+# Add column to r
+# Add replication rule for r alongside persistence rule
+# Assumption: Rules downstream of r are monotone

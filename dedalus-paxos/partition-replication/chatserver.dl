@@ -1,0 +1,24 @@
+# server
+persist chatMembers(c, l, t)
+persist messages(m, l, t)
+receivedMessages(m, c, t') :- messages(m, l, t), chatMembers(c, l, t), choose(_, t')
+
+# chat members
+# send chatMember packet to server
+self(c)
+server(s)
+persist receivedMessages(m, l, t)
+chatMembers(c, s, t') :- self(c), server(s), choose(_, t')
+
+
+members(p, m, l, t) :- client_in(m, l, t), replicas(p), choose(_, t')
+members(p, m, l, t') :- members(p, m, l, t), succ(t, t')
+# Both negation & aggregation still work after replication, replicated state corresponds to normal state via the "first write" (write all, read all, pick smallest timestamp for replicated values). If replicated value exists at larger timestamp, need downstream to suppress duplicates. The downstream must be monotonic?
+# Broadcast write (order differs across replicas), downstream monotonicity (through just persistence). How to guarantee same facts generated?
+# 1. Replicated relation doesn't join
+# 2. Joins with EDB
+# 3. Joins with monotonic relation (if r itself is not monotonic, the replicated facts correspond to the "latest arriving fact", since it joins with a longer history the later it arrives. Should require r to be monotonic then, since this clashes with the "first write" mapping function).
+# How does this compose when replicated relations are joined on P?
+
+notPresent(m, l, t) :- ¬members(p, m, l, t), all(m)
+largest(max<m>, l, t) :- members(p, m, l, t)

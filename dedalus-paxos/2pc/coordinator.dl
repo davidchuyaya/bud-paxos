@@ -1,0 +1,45 @@
+# Hashset 2PC coordinator
+# TODO: Include channels to flush log?
+
+######################## relation definitions
+# EDBs
+numParticipants(n)
+commit(c) # table that only holds the fact "commit". To compare against received state
+
+# client APIs
+in_write(client, value, l, t)
+out_write(status, value, l, t) # status = abort or commit
+
+# communication with participants
+out_phase1(value, hash, l, t)
+in_phase1ACK(p, status, value, hash, l, t)
+out_phase2(status, value, hash, l, t)
+in_phase2ACK(p, status, value, hash, l, t)
+
+# logging
+log(value, hash, l, t)
+
+# internal state
+numPhase1ACKs(num, value, hash, l, t)
+numPhase2ACKs(num, value, hash, l, t)
+
+
+######################## rules
+# Persistence
+numPhase1ACKs(num, value, hash, l, t') :- numPhase1ACKs(num, value, hash, l, t), succ(t, t')
+numPhase2ACKs(num, value, hash, l, t') :- numPhase2ACKs(num, value, hash, l, t), succ(t, t')
+
+# 2PC to participants
+out_phase1(value, hash, l, t) :- in_write(client, value, l, t), hash(value, hash)
+numPhase1ACKs(count<p>, value, hash, l, t) :- in_phase1ACK(p, status, value, hash, l, t), commit(status)
+out_phase2(status, value, hash, l, t) :- numPhase1ACKs(num, value, hash, l, t), numParticipants(num), commit(status)
+numPhase2ACKs(count<p>, value, hash, l, t) :- in_phase2ACK(p, status, value, hash, l, t), commit(status)
+
+# Logging, assuming instantly flushed and no failures within a timestamp
+
+
+# Reply to client
+out_write(client, value, l, t) :- numPhase2ACKs(num, value, _, l, t), numParticipants(num)
+
+
+# FILE IS INCOMPLETE

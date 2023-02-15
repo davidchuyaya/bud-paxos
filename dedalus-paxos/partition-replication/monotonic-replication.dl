@@ -1,0 +1,60 @@
+# Join miss example for "read all" merge
+# Original program
+r(a, l, t') :- client_in(a, b, c, l, t), choose(_, t')
+s(b, l, t') :- client_in(a, b, c, l, t), choose(_, t')
+r(a, l, t') :- r(a, l, t), succ(t, t')
+s(b, l, t') :- s(b, l, t), succ(t, t')
+outR(a, l, t) :- r(a, l, t)
+outS(b, l, t) :- s(b, l, t)
+outRS(a, b, l, t) :- r(a, l, t), s(b, l, t)
+# Replicated program, r & s gain a "replica" column
+r(p, a, l, t') :- client_in(a, b, c, l, t), replicas(p), choose(_, t')
+s(p, b, l, t') :- client_in(a, b, c, l, t), replicas(p), choose(_, t')
+r(p, a, l, t') :- r(p, a, l, t), succ(t, t')
+s(p, b, l, t') :- s(p, b, l, t), succ(t, t')
+outR(a, l, t) :- r(_, a, l, t)
+outS(b, l, t) :- s(_, b, l, t)
+outRS(a, b, l, t) :- r(p, a, l, t), s(p, b, l, t) # If outR and outS have an output at time t, expect an output here too. But that might not happen because p's don't join.
+
+
+# Set negation
+set(v, l, t') :- set(v, l, t), succ(t, t')
+notPresent(v, l, t) :- client_in(v, l, t), ¬set(v, l, t)
+alias(v, l, t) :- notPresent(v, l, t)
+client_out(v, l, t) :- alias(v, l, t) # Can't just "drop p" after replication. Need to make sure that no replica has it.
+# Replicated program. If any replica has the value, treat as if all have it.
+notPresent(p, v, l, t) :- client_in(v, l, t), ¬set(p, v, l, t)
+alias(p, v, l, t) :- notPresent(p, v, l, t)
+aliasCount(count<p>, v, l, t) :- alias(p, v, l, t)
+client_out(v, l, t) :- aliasCount(c, v, l, t), numReplicas(c) # All replicas have this negated value = no replica has this value.
+
+
+# Max (aggregation)
+set(v, l, t') :- set(v, l, t), succ(t, t')
+largest(max<v>, l, t) :- set(v, l, t)
+alias(v, l, t) :- largest(v, l, t)
+client_out(v, l, t) :- alias(v, l, t)
+# Replicated program.
+largest(p, max<v>, l, t) :- set(p, v, l, t)
+alias(max<v>, l, t) :- largest(_, v, l, t)
+client_out(v, l, t) :- alias(v, l, t)
+
+# Composite (negation + max)?
+
+
+# Replicating monotonic derivations
+# Original
+s(max<a>, b) :- r(a, b) # (1,0), (3,0), (1,1), (4,1) -> (3,0), (4,1)
+u(min<b>) :- s(_, b) # 0
+v(a, b) :- s(a, b), u(b) # (3,0)
+# Replicated. Replace "r" with repV, recreate all transformations past that point. Uses idempotence of exemplary aggregation
+s(p, max<a>, b) :- r(p, a, b)
+u(p, min<b>) :- s(p, _, b)
+v(p, a, b) :- s(p, a, b), u(p, b) # All original inputs are possible
+repV(a, b) :- v(_, a, b)
+repS(max<a>, b) :- repV(a, b)
+repU(min<b>) :- repS(_, b)
+originalV(a, b) :- repS(a, b), repU(b)
+
+s(max<a>, b, t) :- r(a, b, t)
+out(a, b, t') :- s(a, b, t), choose(_, t')

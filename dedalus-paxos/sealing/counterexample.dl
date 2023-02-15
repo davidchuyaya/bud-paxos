@@ -1,0 +1,67 @@
+# Example where sealing cannot be partitioned
+
+### Program ###
+in_write(sender, payload, l, t)
+in_query(id, sender, l, t)
+state(payload, l, t)
+out_write(payload, l, t)
+out_query(id, c, l, t)
+out_queryACK(id, l, t)
+
+state(payload, l, t) :- in_write(_, payload, l, t)
+state(payload, l, t') :- state(payload, l, t), succ(t, t')
+out_write(payload, sender, t') :- in_write(sender, payload, l, t), choose(_, t')
+
+out_queryACK(id, sender, t') :- in_query(id, sender, l, t), choose(_, t')
+out_query(count<payload>, sender, t') :- state(payload, l, t), in_query(id, sender, l, t), choose(_, t')
+
+### Execution ###
+# 1. Client sends in_query(0). Receives out_queryACK(0)
+# 2. Client sends in_write("a"). Receives out_write("a")
+# 3. Client sends in_write("b"). Receives out_write("b")
+# 4. Client sends in_query(1). Receives out_queryACK(1)
+# Worry: When partitioned on payload, if the partitions return 0,0 then 1,1, they might be merged into 0,2 or 1,1, depending or ordering. In the original execution, the only valid result is 0,2. This case is confounded with replication, since out_queryACK and in_query both cannot be partitioned either.
+
+### After partitioning seal, ignoring out_queryACK ###
+partitionMap(payload, p) # mapping from payload to some value finer-grained than a partition
+numPartitions(n)
+out_queryPartitioned(p, c, l, t)
+out_queryNumPartitions(num, c, l, t)
+
+out_query(p, count<payload>, sender, t') :- state(payload, l, t), partitionMap(payload, p), in_query(id, sender, l, t), choose(_, t')
+### Client-side merging out_query ###
+out_queryNumPartitions(count<p>, l, t) :- out_query(p, _, l, t)
+out_query(sum<c>, l, t) :- out_query(p, c, l, t), out_queryNumPartitions(num, l, t), numPartitions(num)
+
+# Note: The transformation doesn't work unless we assume that the aggregation is existence dependent on some input + the input has some uniqueness?
+
+
+
+
+
+# Example where sealing requires "one fact per unique group-by"
+fiveChars(char) # assume prefilled with 'a', 'b', 'c', 'd', 'e'
+append(str, char, out) # assume adds char to the end of the string
+in_write(sender, payload, l, t)
+in_query(id, sender, l, t)
+state1(payload, l, t)
+state5(payload, l, t)
+out_write(payload, l, t)
+out_query(id, c, l, t)
+
+state1(payload, l, t) :- in_write(_, payload, l, t)
+state1(payload, l, t') :- state1(payload, l, t), succ(t, t')
+state5(out, l, t) :- in_write(_, payload, l, t), fiveChars(char), append(payload, char, out)
+state5(payload, l, t') :- state5(payload, l, t), succ(t, t')
+out_write(payload, sender, t') :- in_write(sender, payload, l, t), choose(_, t')
+
+out_query(id, count<payload>, sender, t') :- state1(payload, l, t), in_query(id, sender, l, t), choose(_, t')
+out_query(id, count<payload>, sender, t') :- state5(payload, l, t), in_query(id, sender, l, t), choose(_, t')
+
+### Execution ###
+# 1. Client sends in_write("a"). Receives out_write("a")
+# 2. Client sends in_write("b"). Receives out_write("b")
+# 3. Client sends in_query(0).
+# Expected response: 2,10. After partitioning aggregation, it receives two copies of 1,5. Doesn't know which ones to merge together, might accidentally generate 6,6.
+# Conclusion: Have to guarantee that for the same group-by attributes of the aggregation (in this case, the id), there is a unique value?
+# Can just enforce that each output only exists in a single rule? Then that + no joins on the aggregation = all outputs in the same timestep must have the same aggregation?
