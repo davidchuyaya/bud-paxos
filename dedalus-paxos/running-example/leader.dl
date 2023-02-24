@@ -8,46 +8,32 @@
 
 ######################## relation definitions
 # EDBs
-replicas(r)
-numReplicas(n)
+client(c)
+storageNodes(r)
+numNodes(n)
 sign(msg, sig, l) # sign(msg, l) = sig
 
 # client APIs
-in_write(client, value, l, t)
-out_write(cert, value, l, t) # certificate of signatures
-in_readCollisions(client, hash, l, t)
-out_readCollisions(cert, num, hash, l, t)
+in(value, l, t)
+outCert(c, v, coll, l, t) # certificate of signatures
+outInconsistent(v, l, t)
 
 # communication with replicas
-replicaWrite(client, value, l, t)
-replicaWriteACK(client, sig, value, l, t)
-replicaReadCollisions(client, hash, l, t)
-replicaReadCollisionsACK(client, sig, num, hash, l, t)
+toStorages(v, lSig, l, t) # lSig = leader sig
+fromStorages(r, sig, v, coll, l, t) # r = replica ID
 
 # internal state
-writeACKs(client, sig, value, l, t)
-numWriteACKs(cnt, client, value, l, t)
-writeCert(client, cert, value, l, t)
-readCollisionACKs(client, sig, num, hash, l, t)
-numReadCollisionsACKs(cnt, client, num, hash, l, t)
-readCollisionsCert(client, cert, value, l, t)
+acks(r, sig, v, coll, l, t)
+numACKs(cnt, v, coll, l, t)
+certs(cert, v, coll, l, t)
 
 ######################## rules
-# braodcasting to replicas
-replicaWrite(value, r, t') :- in_write(client, value, l, t), replicas(r), choose(_, t')
-replicaReadCollisions(client, hash, r, t') :- in_readCollisions(client, hash, l, t), replicas(r), choose(_, t')
-
+# Sugared syntax: exclude all location and time. Use @async(l) for sends
 # persistence
-writeACKs(client, sig, value, l, t') :- writeACKs(client, sig, value, l, t), succ(t, t')
-readCollisionACKs(client, sig, num, hash, l, t') :- readCollisionACKs(client, sig, num, hash, l, t), succ(t, t')
-
-# replying to the client
-writeACKs(client, sig, value, l, t) :- replicaWriteACK(client, sig, value, l, t)
-readCollisionACKs(client, sig, num, hash, l, t) :- replicaReadCollisionsACK(client, sig, num, hash, l, t)
-numWriteACKs(count<client>, value, l, t) :- writeACKs(client, _, value, l, t)
-numReadCollisionsACKs(count<client>, num, hash, l, t) :- readCollisionACKs(client, _, num, hash, l, t)
-# create certificates
-writeCert(client, certificate<sig>, value, l, t) :- writeACKs(client, sig, value, l, t) # Assume existence of certificate<> aggregation
-readCollisionsCert(client, certificate<sig>, num, hash, l, t) :- readCollisionACKs(client, sig, num, hash, l, t)
-out_write(cert, value, client, t') :- writeCert(client, cert, value, l, t), numWriteACKs(cnt, value, l, t), numReplicas(cnt), choose(_, t')
-out_readCollisions(cert, num, hash, client, t') :- readCollisionsCert(client, cert, num, hash, l, t), numReadCollisionsACKs(cnt, num, hash, l, t), numReplicas(cnt), choose(_, t')
+persist[acks]
+toStorage(v,lSig)@async(s) :- in(v), sign(v,lSig), storageNodes(s)
+acks(s,sig,v,coll) :- fromStorage(s,sig,v,coll)
+numACKs(count<s>,v,coll) :- acks(s,_,v,coll)
+certs(cert<sig>,v,coll) :- acks(_,sig,v,coll)
+outCert(ce,v,coll,h)@async(c) :- certs(ce,v,coll), numACKs(cnt,v,coll), numNodes(cnt), client(c)
+outInconsistent(v)@async(c) :- acks(_,_,v,coll1), acks(_,_,v,coll2), coll1 != coll2, client(c)

@@ -6,28 +6,22 @@
 
 ######################## relation definitions
 # EDBs
-leader(l)
-sign(msg, sig, l) # sign(msg, l) = sig
+leader(l')
+sign(msg, sig) # sign(msg, l) = sig
 hash(value, h) # hash(value) = h
+verify(msg, sig)
 
 # communication with replicas
-replicaWrite(client, value, l, t)
-replicaWriteACK(client, sig, value, l, t)
-replicaReadCollisions(client, hash, l, t)
-replicaReadCollisionsACK(client, sig, num, hash, l, t)
+toStorage(v, lSig, l, t) # lSig = leader sig
+fromStorage(r, sig, v, coll, l, t) # r = replica ID
 
 # internal state
 hashset(hash, value, l, t)
-numCollisions(num, hash, l, t)
+numCollisions(coll, hash, l, t)
 
 ######################## rules
-# persistence
-hashset(hash, value, l, t') :- hashset(hash, value, l, t), succ(t, t')
-
-# writes
-hashset(hash, value, l, t) :- replicaWrite(_, value, l, t), hash(value, hash)
-replicaWriteACK(client, sig, value, l', t') :- replicaWrite(client, value, l, t), sign(value, sig, l), leader(l'), choose(_, t')
-
-# reads
-numCollisions(count<value>, hash, l, t) :- replicaReadCollisions(_, hash, l, t), hashset(hash, value, l, t)
-replicaReadCollisionsACK(client, sig, num, hash, l', t') :- replicaReadCollisions(client, hash, l, t), numCollisions(num, hash, l, t), sign(hash, sig, l), leader(l'), choose(_, t')
+# Sugared syntax: exclude all location and time. Use @async(l) for sends
+persist[hashset]
+hashset(h,v) :- toStorage(v,lSig), hash(v,h), verify(v,lSig)
+numCollisions(count<v>,h) :- toStorage(v,lSig), hash(v,h), hashset(h,v)
+fromStorage(l,sig,v,coll)@async(l') :- toStorage(v,_), hash(v,h), numCollisions(coll,h), sign(v,sig), leader(l')
