@@ -1,0 +1,612 @@
+// TODO: [x] create viewChangeMessageSetByView to prevent relying on a magic relation that doesnt exist (contains)
+// TODO: [x] new view log (verifying the O set)
+// TODO: add liveness view change multicast pseudocode
+// TODO: comments
+// TODO: remove all parentheses in outboxes
+// TODO: remove all ls and ts to adhere to shadaj syntax
+// TODO: find which relations are garbage collected and leave question marks for those that you're unsure about (like watermarks)
+// TODO: define channel to send commands to execution
+// TODO: define channel to take in results of executing commands (to send to client + checkpointing)
+// TODO: how to garbage collect with checkpoints? oooh the condition in msgLog that requires seqNum >= h might have a double use
+// TODO: move in david's critical path code
+// TODO: client implementation (if no response from primary broadcast to all nodes)
+// ∈
+########## EDBs (we provide)
+
+next(t, t')
+
+publicKeyStore(pk, l)
+privateKeyStore(sk, l)
+
+verifySignature(pk, msg, sig)
+signMsg(sk, msg, sig)
+
+# d is the digest of msg
+digest(msg, d)
+
+# set contains elem
+contains(set, elem)
+
+# one row per replica l
+replicas(l)
+
+########## EDBs (created for this protocol)
+
+########## assumed relations
+
+FAILURES(f)
+NO-OP(op)
+WATERMARK_WIDTH(k)
+CHECKPOINT_INTERVAL(k)
+
+currentView(v, l, t)
+viewPrimary(v, l)
+
+########## start code
+
+checkpointOutbox((n, d, l), l, t) :-
+    ...
+
+checkpointIn((n, d, l), sig, l, l', t')@async :-
+    checkpointOutbox((n, d, l), l', t),
+    privateKeyStore(sk, l),
+    signMsg(sk, (n, d, l), sig),
+    replicas(l')
+
+checkpointVerifiedIn((n, d, l'), sig, l', l, t) :-
+    checkpointIn((n, d, l'), sig, l', l, t),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (n, d, l'), sig)
+
+checkpointLog(n, d, l', sig, l, t) :-
+    ... # accepted checkpoints
+
+checkpointCertSize(n, d, count<l'>, l, t) :-
+    checkpointLog(n, d, l', _, l, t)
+
+stableCheckpoint(n, d, l, t) :-
+    checkpointCertSize(n, d, certSize, l, t),
+    FAILURES(f),
+    certSize >= 2 * f + 1
+
+stableCheckpointProof(n, d, *((n, d, l'), sig), l, t) :-
+    stableCheckpoint(n, d, l, t),
+    checkpointLog(n, d, l', sig, l, t)
+
+lastStableCheckpoint(max<n>, l, t) :-
+    stableCheckpoint(n, _, l, t)
+
+lowWatermark(h, l, t) :-
+    lastStableCheckpoint(h, l, t)
+
+// ASK?: initialize to zero?
+lowWatermark(0, l, t) :-
+    ¬stableCheckpoint(_, _, l, t)
+
+preprepareVerifiedIn((v, n, d), sig, m, l', l, t) :-
+    preprepareIn((v, n, d), sig, m, l', l, t),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (v, n, d), sig)
+
+preprepareLog(v, n, d, m, sig, l, t) :-
+    ... # accepted prepreps
+    # should originate from primary of the view
+
+prepareVerifiedIn((v, n, d, l'), sig, l', l, t) :-
+    prepareIn((v, n, d, l'), sig, l', l, t),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (v, n, d, l'), sig)
+
+prepareLog(v, n, d, l', sig, l, t) :-
+    ... # accepted prepares
+
+prepareCertSize(v, n, d, count<l'>, l, t) :-
+    prepareLog(v, n, d, l', _, l, t)
+
+prepared(m, v, n, l, t) :-
+    preprepareLog(v, n, d, m, _, l, t),
+    prepareCertSize(v, n, d, certSize, l, t),
+    FAILURES(f),
+    certSize >= 2 * f + 1
+
+preparedProof(m, v, n, ((v, n, d), preprepSig), *((v, n, d, l'), sig), l, t) :-
+    prepared(m, v, n, l, t),
+    preprepareLog(v, n, d, m, preprepSig, l, t),
+    prepareLog(v, n, d, l', sig, l, t)
+
+// filter out earlier for performance
+// only send highest view, can delete messages under that
+uncheckpointedPreparedProofs(*(preprep, prepareCert), l, t) :-
+    preparedProof(_, _, n, preprep, prepareCert, l, t),
+    lastStableCheckpoint(chkptSeqNum, l, t),
+    n > chkptSeqNum
+
+requestVerifiedIn((o, clientTimestamp, l'), sig, l', l, t) :-
+    requestIn((o, clientTimestamp, l'), sig, l', l, t),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (o, clientTimestamp, l'), sig)
+
+requestLog(o, clientTimestamp, c, sig, l, t) :-
+    ...
+
+committedLocal(m, v, n, l, t) :-
+    ...
+
+pendingRequests((o, clientTimestamp, c), l, t) :-
+    requestLog(o, clientTimestamp, c, _, l, t),
+    ¬committedLocal((o, clientTimestamp, c), _, _, l, t)
+
+viewChangeTimer(cutoff, l, t) :-
+    ... # if there are pending requests: max(latest committed + buffer, earliest pending + buffer), otherwise infinity
+
+// add negation to do exactly-once semantics and avoid spam
+viewChangeOutbox((v', n, C, P, l), l, t') :-
+    viewChangeTimer(cutoff, l, t),
+    t >= cutoff,
+    currentView(v, l, t),
+    v' = v + 1,
+    lastStableCheckpoint(n, l, t),
+    stableCheckpointProof(n, _, C, l, t),
+    uncheckpointedPreparedProofs(P, l, t),
+    ¬viewChangeOutbox((v', n, C, P, l), l, t),
+    next(t, t')
+
+// garbage collect by not persisting (:+)
+// - :+ persists stuff into the *next* timestamp
+// - :- adds stuff within the same tick and nothing else
+// - .persist r1 persists everything in r1 for each tick (makes it monotonic) 
+// ASK: why broadcast view changes to all replicas if the primary sends V anyway? will replicas ever use received view changes that aren't in V? ans: yes, for liveness (see paper)
+viewChangeIn((v', n, C, P, l), sig, l, l', t')@async :-
+    viewChangeOutbox((v', n, C, P, l), l, t),
+    privateKeyStore(sk, l),
+    signMsg(sk, (v', n, C, P, l), sig),
+    replicas(l')
+
+// TODO: VIEW-CHANGE TIMER, MISC. LOG CONDITIONS
+// TODO: create sets as soon as possible and make sure they don't explode cross products
+viewChangeVerifiedIn((v, n, C, P, l'), sig, l', l, t) :-
+    viewChangeIn((v, n, C, P, l'), sig, l', l, t),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (n, d, l'), sig)
+
+viewChangeLog(v, n, C, P, l', sig, l, t) :-
+    ... # accepted view-changes
+    // check i am the supposed primary of the new view? no, new primary will do check before sending out new-view messages
+
+viewChangeCertSize(v, count<l'>, l, t) :-
+    viewChangeLog(v, _, _, _, l', _, l, t)
+
+newViewReady(v, l, t) :-
+    viewChangeCertSize(v, certSize, l, t),
+    FAILURES(f),
+    certSize >= 2 * f + 1
+
+viewChangeMessages(v, *((v, n, C, P, l'), sig), l, t) :-
+    viewChangeLog(v, n, C, P, l', sig, l, t)
+
+# if the primary, will create myself
+# if not the primary case exists further below
+viewChangeMessageSetByView(v, viewChangeMsgSet, l, t) :-
+    viewPrimary(v, l),
+    viewChangeMessages(v, viewChangeMsgSet, l, t)
+
+# viewChangeMsgSet => *((v, n, C, P, l'), sig)
+# all "FromViewChangeSet" assumes viewChangeMsgSet is well-formed
+latestStableCheckpointSeqNumFromViewChangeSet(viewChangeMsgSet, max<chkptSeqNum>, l, t) :-
+    viewChangeMessageSetByView(_, viewChangeMsgSet, l, t),
+    contains(viewChangeMsgSet, ((_, _, C, _, _), _)),
+    contains(C, ((chkptSeqNum, _, _), _))
+
+# min-s
+latestPrepareSeqNumFromViewChangeSet(viewChangeMsgSet, max<prepSeqNum>, l, t) :-
+    viewChangeMessageSetByView(_, viewChangeMsgSet, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, P, _), _)),
+    contains(P, (((_, prepSeqNum, _), _), _))
+
+# max-s
+highestPreparedProofViewBySeqNumFromViewChangeSet(viewChangeMsgSet, n, max<msgView>, l, t) :-
+    viewChangeMessageSetByView(_, viewChangeMsgSet, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, P, _), _)),
+    contains(P, (((msgView, n, _), _), _))
+
+# there is an operation with seq number n in P
+highestViewPreparedMessageDigestBySeqNumFromViewChangeSet(viewChangeMsgSet, n, d, l, t) :-
+    highestPreparedProofViewBySeqNumFromViewChangeSet(viewChangeMsgSet, n, highestProofView, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, P, _), _)),
+    contains(P, (((highestProofView, n, d), _), _)), # should only have one unique value of d
+
+# no operation exists for seq number min-s < n <= max-s in P
+emptyBoundedSeqNumsFromViewChangeSet(viewChangeMsgSet, n, l, t) :-
+    latestStableCheckpointSeqNumFromViewChangeSet(viewChangeMsgSet, minSeqNum, l, t),
+    latestPrepareSeqNumFromViewChangeSet(viewChangeMsgSet, maxSeqNum, l, t),
+    minSeqNum < n <= maxSeqNum,
+    ¬highestViewPreparedMessageDigestBySeqNumFromViewChangeSet(viewChangeMsgSet, n, _, l, t)
+
+// ASK: is the set operator by rule or by table? this also applies to aggregates in general; ans: by rule
+// in other words, does
+
+// a(*u) :-
+//     f(u)
+
+// a(*v) :-
+//     g(v)
+
+// equal?
+
+// b(u) :-
+//     f(u)
+
+// b(v) :-
+//     g(v)
+
+// a(*w) :-
+//     b(w)
+
+// or does the first example instead create two different rows, one for both f and g?
+
+// ASK: can i even do? in other words, does datalog type-check at all? side question, what about tuples? ans: yes assume things are strongly type checked
+
+// a(*u) :-
+//     f(u)
+
+// a(v) :-
+//     g(v)
+
+// why it is relevant: a = O set, f(u) = a message exists in the P set for seq number n, g(v) = no message exists in the P set for seq number n (and therefore we need a no-op)
+
+# first case for an element in the O set (the message in P with the highest view under the seq number n)
+newViewPreparedMessagesFromViewChangeSet(viewChangeMsgSet, ((v', n, d), sig), l, t) :-
+    contains(viewChangeMsgSet, ((v', _, _, _, _), _)), # should only be one v'
+    highestViewPreparedMessageDigestBySeqNumFromViewChangeSet(viewChangeMsgSet, n, d, l, t),
+    latestStableCheckpointSeqNumFromViewChangeSet(viewChangeMsgSet, minSeqNum, l, t),
+    latestPrepareSeqNumFromViewChangeSet(viewChangeMsgSet, maxSeqNum, l, t),
+    minSeqNum < n <= maxSeqNum, // could bound seq nums earlier for performance
+    privateKeyStore(sk, l),
+    signMsg(sk, (v', n, d), sig)
+
+# second case for an element in the O set (no message in P, no-op)
+newViewPreparedMessagesFromViewChangeSet(viewChangeMsgSet, ((v', n, d), sig), l, t) :-
+    contains(viewChangeMsgSet, ((v', _, _, _, _), _)), # should only be one v'
+    emptySeqNumsFromViewChangeSet(viewChangeMsgSet, n, l, t),
+    NO-OP(op),
+    digest(op, d), // could just save the no-op digest directly for performance
+    privateKeyStore(sk, l),
+    signMsg(sk, (v', n, d), sig)
+
+# combining both cases into the O set
+newViewPreparedSetFromViewChangeSet(viewChangeMsgSet, *((v', n, d), sig), l, t) :-
+    newViewPreparedMessagesFromViewChangeSet(viewChangeMsgSet, ((v', n, d), sig), l, t)
+
+# new-view messages from other primaries are mixed with those meant to be sent by us, but we only send those for views in which we're the primary
+newViewOutbox((v', viewChangeMsgSet, O), l, t') :-
+    currentView(v, l, t),
+    v' = v + 1,
+    viewPrimary(v', l),
+    newViewReady(v', l, t),
+    viewChangeMessages(v', viewChangeMsgSet, l, t),
+    newViewPreparedSetFromViewChangeSet(viewChangeMsgSet, O, l, t),
+    ¬newViewOutbox((v', viewChangeMsgSet, O), l, t),
+    next(t, t')
+
+newViewIn((v', viewChangeMsgSet, O), sig, l, l', t')@async :-
+    newViewOutbox((v', viewChangeMsgSet, O), l, t),
+    privateKeyStore(sk, l),
+    signMsg(sk, (v', viewChangeMsgSet, O), sig),
+    replicas(l')
+
+newViewVerifiedIn((v', viewChangeMsgSet, O), sig, l', l, t) :-
+    newViewIn((v', viewChangeMsgSet, O), sig, l', l, t),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (n, d, l'), sig)
+
+# new-view viewChangeMsgSet well formed conditions:
+# - [1] at least v_n >= 2f + 1 view-change messages
+# - [1] exactly v_n distinct l' values
+// TODO: change to eq/dont eq syntax
+# - [2] min v' in viewChangeMsgSet equals v' in the new-view
+# - [2] max v' in viewChangeMsgSet equals v' in the new-view
+# - [3] all view-change signatures work according to their l'
+# - [4] at least c_n >= 2f + 1 checkpoint messages in C
+# - [4] exactly c_n distinct l' values
+# - [5] min n in C equals the n in the view-change message
+# - [5] max n in C equals the n in the view-change message
+# - [6] min d in C equals max d in C
+# - [7] all checkpoint signatures work according to their l'
+# - [8] each (preprep, prepCert) in P:
+#     - [8a] at least p_n >= 2f + 1 prepare messages
+#     - [8a] exactly p_n distinct l' values
+#     - [8b] min v in prepCert equals v in preprep
+#     - [8b] max v in prepCert equals v in preprep
+#     - [8c] min n in prepCert equals n in preprep
+#     - [8c] max n in prepCert equals n in preprep
+#     - [8d] min d in prepCert equals d in preprep
+#     - [8d] max d in prepCert equals d in preprep
+#     - [8e] all prepCert signatures work according to their l'
+#     - [8f] the preprep signature works according to the primary of v
+
+newViewWellFormedIn((v', viewChangeMsgSet, O), sig, l', l, t) :-
+    newViewVerifiedIn((v', viewChangeMsgSet, O), sig, l', l, t),
+    viewChangeMsgSetMeetsMinimumSize(viewChangeMsgSet, l, t),
+    viewChangeMsgSetParticipantsDistinct(viewChangeMsgSet, l, t),
+    viewChangeMsgSetViewsMatch(viewChangeMsgSet, l, t),
+    viewChangeMsgSetSignaturesValid(viewChangeMsgSet, l, t),
+    viewChangeMsgSetStableCheckpointProofMeetsMinimumSize(viewChangeMsgSet, l, t),
+    viewChangeMsgSetStableCheckpointProofParticipantsDistinct(viewChangeMsgSet, l, t),
+    viewChangeMsgSetStableCheckpointProofSeqNumsMatch(viewChangeMsgSet, l, t),
+    viewChangeMsgSetStableCheckpointProofDigestsMatch(viewChangeMsgSet, l, t),
+    viewChangeMsgSetStableCheckpointProofSignaturesValid(viewChangeMsgSet, l, t),
+    viewChangeMsgSetUncheckpointedPreparedProofsWellFormed(viewChangeMsgSet, l, t)
+
+# viewChangeMsgSet well formed condition [1]
+viewChangeMsgSetSize(viewChangeMsgSet, count<l'>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, _, l'), _))
+
+viewChangeMsgSetParticipantSet(viewChangeMsgSet, *l', l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, _, l'), _))
+
+viewChangeMsgSetNumDistinctParticipants(viewChangeMsgSet, count<l'>, l, t) :-
+    viewChangeMsgSetParticipantSet(viewChangeMsgSet, participantSet, l, t),
+    contains(participantSet, l')
+
+# at least 2f + 1 distinct l' in viewChangeMsgSet
+viewChangeMsgSetMeetsMinimumSize(viewChangeMsgSet, l, t) :-
+    viewChangeMsgSetNumDistinctParticipants(viewChangeMsgSet, certSize, l, t),
+    FAILURES(f),
+    certSize >= 2 * f + 1
+
+# no duplicate l' in viewChangeMsgSet
+viewChangeMsgSetParticipantsDistinct(viewChangeMsgSet, l, t) :-
+    viewChangeMsgSetSize(viewChangeMsgSet, x, l, t),
+    viewChangeMsgSetNumDistinctParticipants(viewChangeMsgSet, x, l, t)
+
+# viewChangeMsgSet well formed condition [2]
+viewChangeMsgSetMinView(viewChangeMsgSet, min<v'>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((v', _, _, _, _), _))
+
+viewChangeMsgSetMaxView(viewChangeMsgSet, max<v'>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((v', _, _, _, _), _))
+
+viewChangeMsgSetViewsMatch(viewChangeMsgSet, l, t) :-
+    newViewVerifiedIn((v', viewChangeMsgSet, _), _, _, l, t),
+    viewChangeMsgSetMinView(viewChangeMsgSet, v', l, t),
+    viewChangeMsgSetMaxView(viewChangeMsgSet, v', l, t)
+
+# viewChangeMsgSet well formed condition [3]
+viewChangeMsgSetNumValidSignatures(viewChangeMsgSet, count<sig>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((v', n, C, P, l'), sig)),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (v', n, C, P, l'), sig)
+
+viewChangeMsgSetSignaturesValid(viewChangeMsgSet, l, t) :-
+    viewChangeMsgSetNumValidSignatures(viewChangeMsgSet, numSig, l, t),
+    viewChangeMsgSetSize(viewChangeMsgSet, numSig, l, t)
+
+# viewChangeMsgSet well formed condition [4]
+viewChangeMsgSetStableCheckpointProofSize(viewChangeMsgSet, count<l'>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, C, _, _), _)),
+    contains(C, ((_, _, l'), _))
+
+viewChangeMsgSetStableCheckpointProofParticipantSet(viewChangeMsgSet, l*, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, C, _, _), _)),
+    contains(C, ((_, _, l'), _))
+
+viewChangeMsgSetStableCheckpointProofNumDistinctParticipants(viewChangeMsgSet, count<l'>, l, t) :-
+    viewChangeMsgSetStableCheckpointProofParticipantSet(viewChangeMsgSet, participantSet, l, t),
+    contains(participantSet, l')
+
+# at least 2f + 1 distinct l' in viewChangeMsgSet's C set
+viewChangeMsgSetStableCheckpointProofMeetsMinimumSize(viewChangeMsgSet, l, t) :-
+    viewChangeMsgSetStableCheckpointProofNumDistinctParticipants(viewChangeMsgSet, certSize, l, t),
+    FAILURES(f),
+    certSize >= 2 * f + 1
+
+# no duplicate l' in viewChangeMsgSet's C set
+viewChangeMsgSetStableCheckpointProofParticipantsDistinct(viewChangeMsgSet, l, t) :-
+    viewChangeMsgSetStableCheckpointProofSize(viewChangeMsgSet, x, l, t),
+    viewChangeMsgSetStableCheckpointProofNumDistinctParticipants(viewChangeMsgSet, x, l, t)
+
+# viewChangeMsgSet well formed condition [5]
+viewChangeMsgSetStableCheckpointProofMinSeqNum(viewChangeMsgSet, min<n>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, C, _, _), _)),
+    contains(C, ((n, _, _), _))
+
+viewChangeMsgSetStableCheckpointProofMaxSeqNum(viewChangeMsgSet, max<n>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, C, _, _), _)),
+    contains(C, ((n, _, _), _))
+
+viewChangeMsgSetStableCheckpointProofSeqNumsMatch(viewChangeMsgSet, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, n, _, _, _), _)),
+    viewChangeMsgSetStableCheckpointProofMinSeqNum(viewChangeMsgSet, n, l, t),
+    viewChangeMsgSetStableCheckpointProofMaxSeqNum(viewChangeMsgSet, n, l, t)
+
+# viewChangeMsgSet well formed condition [6]
+viewChangeMsgSetStableCheckpointProofMinDigest(viewChangeMsgSet, min<d>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, C, _, _), _)),
+    contains(C, ((_, d, _), _))
+
+viewChangeMsgSetStableCheckpointProofMaxDigest(viewChangeMsgSet, max<d>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, C, _, _), _)),
+    contains(C, ((_, d, _), _))
+
+viewChangeMsgSetStableCheckpointProofDigestsMatch(viewChangeMsgSet, l, t) :-
+    viewChangeMsgSetStableCheckpointProofMinDigest(viewChangeMsgSet, d, l, t),
+    viewChangeMsgSetStableCheckpointProofMaxDigest(viewChangeMsgSet, d, l, t)
+
+# viewChangeMsgSet well formed condition [7]
+viewChangeMsgSetStableCheckpointProofNumValidSignatures(viewChangeMsgSet, count<sig>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, C, _, _), _)),
+    contains(C, ((n, d, l'), sig)),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (n, d, l'), sig)
+
+viewChangeMsgSetStableCheckpointProofSignaturesValid(viewChangeMsgSet, l, t) :-
+    viewChangeMsgSetStableCheckpointProofNumValidSignatures(viewChangeMsgSet, numSig, l, t),
+    viewChangeMsgSetStableCheckpointProofSize(viewChangeMsgSet, numSig, l, t)
+
+# viewChangeMsgSet well formed condition [8]
+viewChangeMsgSetUncheckpointedPreparedProofs(viewChangeMsgSet, *(preprep, prepareCert), l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, P, _), _)),
+    contains(P, (preprep, prepareCert))
+
+viewChangeMsgSetUncheckpointedValidPreparedProofs(viewChangeMsgSet, *(preprep, prepareCert), l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, P, _), _)),
+    contains(P, (preprep, prepareCert)),
+    viewChangeMsgSetUncheckpointedPreparedProofMeetsMinimumSize(viewChangeMsgSet, (preprep, prepareCert), l, t),
+    viewChangeMsgSetUncheckpointedPreparedProofParticipantsDistinct(viewChangeMsgSet, (preprep, prepareCert), l, t),
+    viewChangeMsgSetUncheckpointedPreparedProofViewsMatch(viewChangeMsgSet, (preprep, prepareCert), l, t),
+    viewChangeMsgSetUncheckpointedPreparedProofSeqNumsMatch(viewChangeMsgSet, (preprep, prepareCert), l, t),
+    viewChangeMsgSetUncheckpointedPreparedProofDigestsMatch(viewChangeMsgSet, (preprep, prepareCert), l, t),
+    viewChangeMsgSetUncheckpointedPreparedProofSignaturesValid(viewChangeMsgSet, (preprep, prepareCert), l, t),
+    viewChangeMsgSetUncheckpointedPreparedProofPreprepareSignatureValid(viewChangeMsgSet, (preprep, prepareCert), l, t)
+
+viewChangeMsgSetUncheckpointedPreparedProofsWellFormed(viewChangeMsgSet, l, t) :-
+    viewChangeMsgSetUncheckpointedPreparedProofs(viewChangeMsgSet, P, l, t),
+    viewChangeMsgSetUncheckpointedValidPreparedProofs(viewChangeMsgSet, P, l, t)
+
+# viewChangeMsgSet well formed condition [8a]
+viewChangeMsgSetUncheckpointedPreparedProofSize(viewChangeMsgSet, (preprep, prepareCert), count<l'>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, P, _), _)),
+    contains(P, (preprep, prepareCert)),
+    contains(prepareCert, ((_, _, _, l'), _))
+
+viewChangeMsgSetUncheckpointedPreparedProofParticipantSet(viewChangeMsgSet, (preprep, prepareCert), *l', l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, P, _), _)),
+    contains(P, (preprep, prepareCert)),
+    contains(prepareCert, ((_, _, _, l'), _))
+
+viewChangeMsgSetUncheckpointedPreparedProofNumDistinctParticipants(viewChangeMsgSet, (preprep, prepareCert), count<l'>, l, t) :-
+    viewChangeMsgSetUncheckpointedPreparedProofParticipantSet(viewChangeMsgSet, (preprep, prepareCert), participantSet, l, t),
+    contains(participantSet, l')
+
+# at least 2f + 1 distinct l' in the uncheckpointed prepared proof
+viewChangeMsgSetUncheckpointedPreparedProofMeetsMinimumSize(viewChangeMsgSet, (preprep, prepareCert), l, t) :-
+    viewChangeMsgSetUncheckpointedPreparedProofNumDistinctParticipants(viewChangeMsgSet, (preprep, prepareCert), certSize, l, t),
+    FAILURES(f),
+    certSize >= 2 * f + 1
+
+# no duplicate l' in the uncheckpointed prepared proof
+viewChangeMsgSetUncheckpointedPreparedProofParticipantsDistinct(viewChangeMsgSet, (preprep, prepareCert), l, t) :-
+    viewChangeMsgSetUncheckpointedPreparedProofSize(viewChangeMsgSet, x, l, t),
+    viewChangeMsgSetUncheckpointedPreparedProofNumDistinctParticipants(viewChangeMsgSet, x, l, t)
+
+# viewChangeMsgSet well formed condition [8b]
+viewChangeMsgSetUncheckpointedPreparedProofMinView(viewChangeMsgSet, (preprep, prepareCert), min<msgView>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, P, _), _)),
+    contains(P, (preprep, prepareCert)),
+    contains(prepareCert, ((msgView, _, _, _), _))
+
+viewChangeMsgSetUncheckpointedPreparedProofMaxView(viewChangeMsgSet, (preprep, prepareCert), max<msgView>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, P, _), _)),
+    contains(P, (preprep, prepareCert)),
+    contains(prepareCert, ((msgView, _, _, _), _))
+
+viewChangeMsgSetUncheckpointedPreparedProofViewsMatch(viewChangeMsgSet, (((msgView, n, d), preprepSig), prepareCert), l, t) :-
+    viewChangeMsgSetUncheckpointedPreparedProofMinView(viewChangeMsgSet, (((msgView, n, d), preprepSig), prepareCert), msgView, l, t),
+    viewChangeMsgSetUncheckpointedPreparedProofMaxView(viewChangeMsgSet, (((msgView, n, d), preprepSig), prepareCert), msgView, l, t)
+
+# viewChangeMsgSet well formed condition [8c]
+viewChangeMsgSetUncheckpointedPreparedProofMinSeqNum(viewChangeMsgSet, (preprep, prepareCert), min<n>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, P, _), _)),
+    contains(P, (preprep, prepareCert)),
+    contains(prepareCert, ((_, n, _, _), _))
+
+viewChangeMsgSetUncheckpointedPreparedProofMaxSeqNum(viewChangeMsgSet, (preprep, prepareCert), max<n>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, P, _), _)),
+    contains(P, (preprep, prepareCert)),
+    contains(prepareCert, ((_, n, _, _), _))
+
+viewChangeMsgSetUncheckpointedPreparedProofSeqNumsMatch(viewChangeMsgSet, (((msgView, n, d), preprepSig), prepareCert), l, t) :-
+    viewChangeMsgSetUncheckpointedPreparedProofMinSeqNum(viewChangeMsgSet, (((msgView, n, d), preprepSig), prepareCert), n, l, t),
+    viewChangeMsgSetUncheckpointedPreparedProofMaxSeqNum(viewChangeMsgSet, (((msgView, n, d), preprepSig), prepareCert), n, l, t)
+
+# viewChangeMsgSet well formed condition [8d]
+viewChangeMsgSetUncheckpointedPreparedProofMinDigest(viewChangeMsgSet, (preprep, prepareCert), min<d>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, P, _), _)),
+    contains(P, (preprep, prepareCert)),
+    contains(prepareCert, ((_, _, d, _), _))
+
+viewChangeMsgSetUncheckpointedPreparedProofMaxDigest(viewChangeMsgSet, (preprep, prepareCert), max<d>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, P, _), _)),
+    contains(P, (preprep, prepareCert)),
+    contains(prepareCert, ((_, _, d, _), _))
+
+viewChangeMsgSetUncheckpointedPreparedProofDigestsMatch(viewChangeMsgSet, (((msgView, n, d), preprepSig), prepareCert), l, t) :-
+    viewChangeMsgSetUncheckpointedPreparedProofMinDigest(viewChangeMsgSet, (((msgView, n, d), preprepSig), prepareCert), d, l, t),
+    viewChangeMsgSetUncheckpointedPreparedProofMaxDigest(viewChangeMsgSet, (((msgView, n, d), preprepSig), prepareCert), d, l, t)
+
+# viewChangeMsgSet well formed condition [8e]
+viewChangeMsgSetUncheckpointedPreparedProofNumValidSignatures(viewChangeMsgSet, (preprep, prepareCert), count<sig>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, P, _), _)),
+    contains(P, (preprep, prepareCert)),
+    contains(prepareCert, ((msgView, n, d, l'), sig)),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (msgView, n, d, l'), sig)
+
+viewChangeMsgSetUncheckpointedPreparedProofSignaturesValid(viewChangeMsgSet, (preprep, prepareCert), l, t) :-
+    viewChangeMsgSetUncheckpointedPreparedProofNumValidSignatures(viewChangeMsgSet, (preprep, prepareCert), numSig, l, t),
+    viewChangeMsgSetUncheckpointedPreparedProofSize(viewChangeMsgSet, (preprep, prepareCert), numSig, l, t)
+
+# viewChangeMsgSet well formed condition [8f]
+viewChangeMsgSetUncheckpointedPreparedProofPreprepareSignatureValid(viewChangeMsgSet, (((msgView, n, d), preprepSig), prepareCert), count<sig>, l, t) :-
+    newViewVerifiedIn((_, viewChangeMsgSet, _), _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, _, P, _), _)),
+    contains(P, (((msgView, n, d), preprepSig), prepareCert)),
+    viewPrimary(msgView, l'),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (msgView, n, d), preprepSig)
+
+# accepted new-view messages
+newViewLog(v', viewChangeMsgSet, O, sig, l', l, t) :-
+    newViewWellFormedIn((v', viewChangeMsgSet, O), sig, l', l, t), # is well formed
+    viewChangeMessageSetByView(v', viewChangeMsgSet, l, t), # is the first new-view message in this view
+    newViewPreparedSetFromViewChangeSet(viewChangeMsgSet, O, l, t) # its O set matches the one we would've created
+
+# choose is used in case multiple new-view messages for the same view are received in the same timestep
+onlyOneViewChangeMessageSet(v', choose<viewChangeMsgSet>, l, t) :-
+    currentView(v, l, t),
+    v' = v + 1,
+    ¬viewPrimary(v', l),
+    newViewWellFormedIn((v', viewChangeMsgSet, _), _, _, l, t),
+    ¬viewChangeMessageSetByView(v', _, l, t)
+
+# persist chosen viewChangeMsgSets
+onlyOneViewChangeMessageSet(v', viewChangeMsgSet, l, t') :-
+    onlyOneViewChangeMessageSet(v', viewChangeMsgSet, l, t),
+    next(t, t')
+
+# if not the primary, will take the first new-view message given by the primary
+viewChangeMessageSetByView(v', viewChangeMsgSet, l, t') :-
+    currentView(v, l, t),
+    v' = v + 1,
+    ¬viewPrimary(v', l),
+    newViewWellFormedIn((v', viewChangeMsgSet, _), _, _, l, t),
+    onlyOneViewChangeMessageSet(v', viewChangeMsgSet, l, t),
+    next(t, t')
+
+// ASK?: can a rule only reference relations that have been defined before it? are only the rules before it evaluated by the time its evaluated?
+// ASK: when do we actually send the checkpoint state s?
+// ASK: when transitioning into a new view v', we multicast new prepare messages in view v' to all replicas (many of which may not be in the new view yet, and will therefore reject the message); do we keep resending these prepare messages (and when do we know to stop, if so)?
