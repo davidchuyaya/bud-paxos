@@ -47,8 +47,17 @@ viewPrimary(v, l)
 checkpointOutbox((n, d, l), l, t) :-
     ...
 
+checkpointSent((n, d, l), l, t') :-
+    checkpointOutbox((n, d, l), l, t),
+    next(t, t')
+
+checkpointSent((n, d, l), l, t') :-
+    checkpointSent((n, d, l), l, t),
+    sent(t, t')
+
 checkpointIn((n, d, l), sig, l, l', t')@async :-
     checkpointOutbox((n, d, l), l', t),
+    ¬checkpointSent((n, d, l), l', t),
     privateKeyStore(sk, l),
     signMsg(sk, (n, d, l), sig),
     replicas(l')
@@ -136,19 +145,55 @@ pendingRequests((o, clientTimestamp, c), l, t) :-
     requestLog(o, clientTimestamp, c, _, l, t),
     ¬committedLocal((o, clientTimestamp, c), _, _, l, t)
 
-viewChangeTimer(cutoff, l, t) :-
+requestCreatedTimestamps((o, clientTimestamp, c), t, l, t') :-
+    requestLog(o, clientTimestamp, c, _, l, t),
+    ¬requestCreatedTimestamps((o, clientTimestamp, c), _, l, t)
+    next(t, t')
+
+requestCreatedTimestamps((o, clientTimestamp, c), timestamp, l, t') :-
+    requestCreatedTimestamps((o, clientTimestamp, c), timestamp, l, t),
+    next(t, t')
+
+committedTimestamps((o, clientTimestamp, c), timestamp, l, t) :-
+    ...
+
+// aggregateRequestCreatedAndCommittedTimestamps((o, clientTimestamp, c), timestamp, l, t)
+
+requestViewChangeTimer(v', cutoff, l, t) :-
     ... # if there are pending requests: max(latest committed + buffer, earliest pending + buffer), otherwise infinity
 
+awaitingNewView(v', l, t) :-
+    newViewReady(v', l, t),
+    ¬newViewLog(v', _, _, _, _, l, t)
+
+newViewChangeTimer(v', cutoff, l, t) :-
+    ... # liveness timer
+
+aggregateViewChangeTimer(v', cutoff, l, t) :-
+    requestViewChangeTimer(v', cutoff, l, t)
+
+aggregateViewChangeTimer(v', cutoff, l, t) :-
+    newViewChangeTimer(v', cutoff, l, t)
+
+viewChangeTimer(v', min<cutoff>, l, t) :-
+    aggregateViewChangeTimer(v', cutoff, l, t)
+
 // add negation to do exactly-once semantics and avoid spam
-viewChangeOutbox((v', n, C, P, l), l, t') :-
-    viewChangeTimer(cutoff, l, t),
+viewChangeOutbox((v', n, C, P, l), l, t) :-
+    viewChangeTimer(v' cutoff, l, t),
     t >= cutoff,
     currentView(v, l, t),
-    v' = v + 1,
+    v' > v,
     lastStableCheckpoint(n, l, t),
     stableCheckpointProof(n, _, C, l, t),
     uncheckpointedPreparedProofs(P, l, t),
-    ¬viewChangeOutbox((v', n, C, P, l), l, t),
+
+viewChangeSent((v', n, C, P, l), l, t') :-
+    viewChangeOutbox((v', n, C, P, l), l, t),
+    next(t, t')
+
+viewChangeSent((v', n, C, P, l), l, t') :-
+    viewChangeSent((v', n, C, P, l), l, t),
     next(t, t')
 
 // garbage collect by not persisting (:+)
@@ -158,6 +203,7 @@ viewChangeOutbox((v', n, C, P, l), l, t') :-
 // ASK: why broadcast view changes to all replicas if the primary sends V anyway? will replicas ever use received view changes that aren't in V? ans: yes, for liveness (see paper)
 viewChangeIn((v', n, C, P, l), sig, l, l', t')@async :-
     viewChangeOutbox((v', n, C, P, l), l, t),
+    ¬viewChangeSent((v', n, C, P, l), l, t),
     privateKeyStore(sk, l),
     signMsg(sk, (v', n, C, P, l), sig),
     replicas(l')
@@ -278,18 +324,25 @@ newViewPreparedSetFromViewChangeSet(viewChangeMsgSet, *((v', n, d), sig), l, t) 
     newViewPreparedMessagesFromViewChangeSet(viewChangeMsgSet, ((v', n, d), sig), l, t)
 
 # new-view messages from other primaries are mixed with those meant to be sent by us, but we only send those for views in which we're the primary
-newViewOutbox((v', viewChangeMsgSet, O), l, t') :-
+newViewOutbox((v', viewChangeMsgSet, O), l, t) :-
     currentView(v, l, t),
     v' = v + 1,
     viewPrimary(v', l),
     newViewReady(v', l, t),
     viewChangeMessages(v', viewChangeMsgSet, l, t),
-    newViewPreparedSetFromViewChangeSet(viewChangeMsgSet, O, l, t),
-    ¬newViewOutbox((v', viewChangeMsgSet, O), l, t),
+    newViewPreparedSetFromViewChangeSet(viewChangeMsgSet, O, l, t)
+
+newViewSent((v', viewChangeMsgSet, O), l, t') :-
+    newViewOutbox((v', viewChangeMsgSet, O), l, t),
+    next(t, t')
+
+newViewSent((v', viewChangeMsgSet, O), l, t') :-
+    newViewSent((v', viewChangeMsgSet, O), l, t),
     next(t, t')
 
 newViewIn((v', viewChangeMsgSet, O), sig, l, l', t')@async :-
     newViewOutbox((v', viewChangeMsgSet, O), l, t),
+    ¬newViewSent((v', viewChangeMsgSet, O), l, t),
     privateKeyStore(sk, l),
     signMsg(sk, (v', viewChangeMsgSet, O), sig),
     replicas(l')
