@@ -2,12 +2,13 @@
 // TODO: [x] new view log (verifying the O set)
 // TODO: [x] add liveness view change multicast pseudocode
 // TODO: [x] implement view-transition true/false state to prevent accepting consensus messages during view changes
+// TODO: define channel to send commands to execution
+// TODO: define channel to take in results of executing commands (to send to client + checkpointing)
+// TODO: create checkpointing logic
 // TODO: comments
 // TODO: remove all parentheses in outboxes
 // TODO: remove all ls and ts to adhere to shadaj syntax
 // TODO: find which relations are garbage collected and leave question marks for those that you're unsure about (like watermarks)
-// TODO: define channel to send commands to execution
-// TODO: define channel to take in results of executing commands (to send to client + checkpointing)
 // TODO: how to garbage collect with checkpoints? oooh the condition in msgLog that requires seqNum >= h might have a double use
 // TODO: move in david's critical path code
 // TODO: client implementation (if no response from primary broadcast to all nodes)
@@ -312,6 +313,7 @@ aggregateViewChangeTimer(v', cutoff, l, t) :-
 aggregateViewChangeTimer(v', cutoff, l, t) :-
     higherViewChangeTimer(v', cutoff, l, t)
 
+# we only care about at most one timer at a time (the closest one)
 viewChangeTimer(v', min<cutoff>, l, t) :-
     aggregateViewChangeTimer(v', cutoff, l, t)
 
@@ -340,17 +342,7 @@ uncheckpointedPreparedProofs(*(preprep, prepareCert), l, t) :-
     lastStableCheckpoint(chkptSeqNum, l, t),
     n > chkptSeqNum
 
-// add negation to do exactly-once semantics and avoid spam
-viewChangeOutbox((v', n, C, P, l), l, t) :-
-    viewChangeTimer(v' cutoff, l, t),
-    t >= cutoff,
-    currentView(v, l, t),
-    v' > v,
-    lastStableCheckpoint(n, l, t),
-    stableCheckpointProof(n, _, C, l, t),
-    uncheckpointedPreparedProofs(P, l, t)
-
-# to allow us to stop accepting consensus messages when a view change is in progress
+# to allow us to stop accepting consensus messages when a view change is in progress; includes the timestep the view-change message is sent out to prevent the concurrent acceptance of consensus messages
 attemptingViewChange(v', l, t) :-
     viewChangeOutbox((v', _, _, _, _), l, t)
 
@@ -360,6 +352,16 @@ attemptingViewChange(v', l, t') :-
     currentView(v, l, t),
     v' > v,
     next(t, t')
+
+// add negation to do exactly-once semantics and avoid spam
+viewChangeOutbox((v', n, C, P, l), l, t) :-
+    viewChangeTimer(v' cutoff, l, t),
+    t >= cutoff,
+    currentView(v, l, t),
+    v' > v,
+    lastStableCheckpoint(n, l, t),
+    stableCheckpointProof(n, _, C, l, t),
+    uncheckpointedPreparedProofs(P, l, t)
 
 viewChangeSent((v', n, C, P, l), l, t') :-
     viewChangeOutbox((v', n, C, P, l), l, t),
