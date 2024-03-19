@@ -37,6 +37,7 @@ CHECKPOINT_INTERVAL(k)
 REQUEST_EXPIRATION(delta)
 NEW_VIEW_EXPIRATION(delta)
 INITIAL_STATE_DIGEST(d)
+viewPrimary(v, l)
 
 ########## end EDBs
 
@@ -47,15 +48,6 @@ INITIAL_STATE_DIGEST(d)
 STATE_MACHINE(l') # the replica's own state machine
 
 ########## end IDBs
-
-
-// TODO: define all these rules
-########## mentioned but never defined
-
-currentView(v, l, t)
-viewPrimary(v, l)
-
-########## end mentioned but never defined
 
 
 
@@ -95,10 +87,18 @@ preprepareVerifiedIn((v, n, d), sig, (o, clientTimestamp, clientLocation), clien
     publicKeyStore(pk, clientLocation),
     verifySignature(pk, (o, clientTimestamp, clientLocation), clientSig)
 
-preprepareLog(v, n, d, o, clientTimestamp, clientLocation, sig, l, t) :-
-    ... # accepted prepreps
+preprepareLog(v, n, d, sig, o, clientTimestamp, clientLocation, clientSig, l, t) :-
+    preprepareVerifiedIn((v, n, d), sig, (o, clientTimestamp, clientLocation), clientSig, l', l, t),
     ¬attemptingViewChange(_, l, t),
-    # should originate from primary of the view
+    viewPrimary(v, l'),
+    digest(o, d),
+    currentView(v, l, t),
+    ¬preprepareLog(v, n, d', _, _, _, _, _, l, t),
+    d != d',
+    lowWatermark(h, l, t),
+    h < n,
+    WATERMARK_WIDTH(k),
+    n < h + k
 
 prepareVerifiedIn((v, n, d, l'), sig, l', l, t) :-
     prepareIn((v, n, d, l'), sig, l', l, t),
@@ -106,8 +106,13 @@ prepareVerifiedIn((v, n, d, l'), sig, l', l, t) :-
     verifySignature(pk, (v, n, d, l'), sig)
 
 prepareLog(v, n, d, l', sig, l, t) :-
+    prepareVerifiedIn((v, n, d, l'), sig, l', l, t),
     ¬attemptingViewChange(_, l, t),
-    ... # accepted prepares
+    currentView(v, l, t),
+    lowWatermark(h, l, t),
+    h < n,
+    WATERMARK_WIDTH(k),
+    n < h + k
 
 ########## end critical path
 
@@ -119,7 +124,7 @@ prepareCertSize(v, n, d, count<l'>, l, t) :-
     prepareLog(v, n, d, l', _, l, t)
 
 prepared(m, v, n, l, t) :-
-    preprepareLog(v, n, d, m, _, l, t),
+    preprepareLog(v, n, d, _, _, _, _, _, l, t),
     prepareCertSize(v, n, d, certSize, l, t),
     FAILURES(f),
     certSize >= 2 * f + 1
@@ -302,9 +307,10 @@ stableCheckpoint(n, d, l, t) :-
     FAILURES(f),
     certSize >= 2 * f + 1
 
-# initialize a blank checkpoint at zero for watermark purposes
+# initialize a blank checkpoint at -1 for watermark purposes (seq nums are zero-indexed, and checkpoints at a seq num represent the state after the seq number has been executed)
 stableCheckpoint(n, d, l, t) :-
-    ZERO(n),
+    ZERO(zero),
+    n = zero - 1,
     INITIAL_STATE(d)
 
 lowWatermark(h, l, t) :-
@@ -442,7 +448,7 @@ lastStableCheckpoint(max<n>, l, t) :-
 
 preparedProof(m, v, n, ((v, n, d), preprepSig), *((v, n, d, l'), sig), l, t) :-
     prepared(m, v, n, l, t),
-    preprepareLog(v, n, d, m, preprepSig, l, t),
+    preprepareLog(v, n, d, preprepSig, _, _, _, _, l, t),
     prepareLog(v, n, d, l', sig, l, t)
 
 // filter out earlier for performance
@@ -923,11 +929,24 @@ viewChangeMsgSetUncheckpointedPreparedProofPreprepareSignatureValid(viewChangeMs
     publicKeyStore(pk, l'),
     verifySignature(pk, (msgView, n, d), preprepSig)
 
+// ASK?: is there a strict requirement on whether or not we should accept new-view messages with views higher than our own? accepting new-view messages with lower views should not change anything in practice, but just wondering
 # accepted new-view messages
 newViewLog(v', viewChangeMsgSet, O, sig, l', l, t) :-
     newViewWellFormedIn((v', viewChangeMsgSet, O), sig, l', l, t), # is well formed
     viewChangeMessageSetByView(v', viewChangeMsgSet, l, t), # is the first new-view message in this view
     newViewPreparedSetFromViewChangeSet(viewChangeMsgSet, O, l, t) # its O set matches the one we would've created
+
+# potential views based on accepted new-view messages
+enteredViews(v, l, t) :-
+    newViewLog(v, _, _, _, _, l, t)
+
+# initialize with view 0
+enteredViews(v, l, t) :-
+    ZERO(v)
+
+# current view is based on highest accepted new-view message
+currentView(max<v>, l, t) :-
+    enteredViews(v, l, t)
 
 # choose is used in case multiple new-view messages for the same view are received in the same timestep
 onlyOneViewChangeMessageSet(v', choose<viewChangeMsgSet>, l, t) :-
