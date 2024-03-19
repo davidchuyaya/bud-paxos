@@ -1,6 +1,7 @@
 // TODO: [x] create viewChangeMessageSetByView to prevent relying on a magic relation that doesnt exist (contains)
 // TODO: [x] new view log (verifying the O set)
 // TODO: add liveness view change multicast pseudocode
+// TODO: implement view-transition true/false state to prevent accepting consensus messages during view changes
 // TODO: comments
 // TODO: remove all parentheses in outboxes
 // TODO: remove all ls and ts to adhere to shadaj syntax
@@ -35,9 +36,12 @@ replicas(l)
 ########## assumed relations
 
 FAILURES(f)
-NO-OP(op)
+NO_OP(op)
 WATERMARK_WIDTH(k)
 CHECKPOINT_INTERVAL(k)
+
+REQUEST_EXPIRATION(delta)
+NEW_VIEW_EXPIRATION(delta)
 
 currentView(v, l, t)
 viewPrimary(v, l)
@@ -187,26 +191,103 @@ requestCreatedTimestamps((o, clientTimestamp, c), timestamp, l, t') :-
     requestCreatedTimestamps((o, clientTimestamp, c), timestamp, l, t),
     next(t, t')
 
+earliestPendingRequestCreatedTimestamp(min<timestamp>, l, t) :-
+    pendingRequests(msg, l, t),
+    requestCreatedTimestamps(msg, timestamp, l, t)
+
 committedTimestamps((o, clientTimestamp, c), timestamp, l, t) :-
     ...
 
-// aggregateRequestCreatedAndCommittedTimestamps((o, clientTimestamp, c), timestamp, l, t)
+latestCommittedTimestamp(max<timestamp>, l, t) :-
+    committedTimestamps(_, timestamp, l, t)
 
-requestViewChangeTimer(v', cutoff, l, t) :-
-    ... # if there are pending requests: max(latest committed + buffer, earliest pending + buffer), otherwise infinity
+latestCommittedAndEarliestPendingTimestamps(timestamp, l, t) :-
+    earliestPendingRequestCreatedTimestamp(timestamp, l, t)
 
+latestCommittedAndEarliestPendingTimestamps(timestamp, l, t) :-
+    latestCommittedTimestamp(timestamp, l, t)
+
+# if there are pending requests: max(latest committed + buffer, earliest pending + buffer), otherwise infinity
+requestExpiredViewChangeTimer(v', max<cutoff>, l, t) :-
+    pendingRequests(_, l, t), # must have a currently pending request
+    currentView(v, l, t),
+    v' = v + 1, # will attempt view change for v + 1
+    latestCommittedAndEarliestPendingTimestamps(timestamp, l, t), # find max(latest committed + buffer, earliest pending + buffer)
+    REQUEST_EXPIRATION(delta),
+    cutoff = timestamp + delta # add buffer
+
+# setup for a timer for the time between receiving 2f + 1 view-change message but before receiving a corresponding new-view message
 awaitingNewView(v', l, t) :-
     newViewReady(v', l, t),
     ¬newViewLog(v', _, _, _, _, l, t)
 
-newViewChangeTimer(v', cutoff, l, t) :-
-    ... # liveness timer
+// ASK: in 4.5.2, does "before it executes a request in the new view that it had not executed previously" mean im waiting for 1. a message to both be received and executed in the new view, or 2. any message to be executed in the new view (it may have been received in a previous view)? if it's the second, the need to specify "that it had not executed previously" implies that there exists situations where we execute a message in the current view but it's a re-execution (and so it should not affect this timer); why would we ever re-execute a message if we've already executed it before (regardless of what view this happened in)?
+// ASK: 4.5.2 reads like we're either waiting for a new-view message for v' or we haven't yet executed a request in v' (by some definition); wouldn't the second half strictly come after receiving a new-view for v', since to even execute a request in v' we need to enter v'? why even specify the first half? ans: luckily for us we're just not caring about the executing a message in the new view part, it's redundant
+# waiting for a new-view message for v'
+viewUnsatisfied(v', l, t) :-
+    awaitingNewView(v', l, t)
+
+# we haven't yet executed a new request in v'
+// NOTE: talked to david and we don't care about this anymore since the request expired timer will cover this in the long run anyways
+// viewUnsatisfied(v', l, t) :-
+
+# start timer once receiving 2f + 1 view-changes for v', stop once v' is no longer "unsatisfied"
+newViewExpiredViewChangeTimer(v', cutoff, l, t) :-
+    viewUnsatisfied(v', l, t), # either waiting for a new-view for v' or waiting for a new request to be executed in v'
+    currentView(v, l, t),
+    v' > v, # only attempt view change for views above ours
+    ¬newViewExpiredViewChangeTimerElapsed(v, v', l, t), # no timers that have already elapsed
+    numNewViewExpiredViewChangeTimersElapsed(v, x, l, t),
+    NEW_VIEW_EXPIRATION(delta),
+    cutoff = delta * 2 ** x # double the timer each consecutive time it's elapsed in the same view
+
+newViewExpiredViewChangeTimerElapsed(v, v', l, t') :-
+    currentView(v, l, t),
+    newViewExpiredViewChangeTimer(v', cutoff, l, t),
+    t >= cutoff,
+    next(t, t')
+
+newViewExpiredViewChangeTimerElapsed(v, v', l, t') :-
+    newViewExpiredViewChangeTimerElapsed(v, v', l, t),
+    next(t, t')
+
+numNewViewExpiredViewChangeTimersElapsed(v, count<v'>, l, t) :-
+    newViewExpiredViewChangeTimerElapsed(v, v', l, t)
+
+// ASK: we perform a view change if we receive f + 1 valid view-change messages, but would it be possible for a malicious replica to simultaneously send f + 1 view-change messages for increasing views to another replica? would an alternative wording "valid view-change messages from f + 1 replicas" be more accurate?
+// ASK: it's known that two correct nodes can be arbitrarily far apart in terms of view; say we have two correct replicas that are arbitrarily far apart in terms of their view (let the behind node have view v and the ahead node have view v'); if the higher node attempts a view change into v' + 1, sending a view-change message to the behind node, the f byzantine nodes could send view-change messages in concert for views v', v' - 1, v' - 2, etc. to the behind node such that it has a set of f + 1 view-change messages with a minimum of v', v' - 1, v' - 2, etc. all the way until v + 1; this would case the behind node to spam view-change messages for views v', v' - 1, etc. in rapid succession; is this intended behavior/not a problem to us? ans: yes, and spamming is fine since it won't actually trigger any behavior for the other correct nodes (at most f nodes can be arbitrarily behind) it'll just be a nuisance
+numHigherViewChangeMessageSenders(count<l'>, l, t) :- // if we wanted to count the number of view-change messages instead of senders, count over (v', l')
+    currentView(v, l, t),
+    viewChangeLog(v', _, _, _, l', _, l, t),
+    v' > v
+
+minHigherViewChangeMessage(min<v'>, l, t) :-
+    currentView(v, l, t),
+    viewChangeLog(v', _, _, _, l', _, l, t),
+    v' > v
+
+higherViewChangeTimer(v', t, l, t) :-
+    numHigherViewChangeMessageSenders(x, l, t),
+    FAILURES(f),
+    x >= f + 1,
+    minHigherViewChangeMessage(v', l, t),
+    ¬higherViewChangeTimerElapsed(v', l, t)
+
+// ASK: could we receive f + 1 view-change messages with a min view of v' > v, but then later receive an additional view-change for view v'' where v < v'' < v'; should we immediately send out another view-change for v''? ans: yep sending out multiple view-change messages is not an issue
+higherViewChangeTimerElapsed(v', l, t) :-
+    higherViewChangeTimer(v', cutoff, l, t),
+    t >= cutoff,
+    next(t, t')
+
+higherViewChangeTimerElapsed(v', l, t') :-
+    higherViewChangeTimerElapsed(v', l, t),
+    next(t, t')
 
 aggregateViewChangeTimer(v', cutoff, l, t) :-
-    requestViewChangeTimer(v', cutoff, l, t)
+    requestExpiredViewChangeTimer(v', cutoff, l, t)
 
 aggregateViewChangeTimer(v', cutoff, l, t) :-
-    newViewChangeTimer(v', cutoff, l, t)
+    newViewExpiredViewChangeTimer(v', cutoff, l, t)
 
 viewChangeTimer(v', min<cutoff>, l, t) :-
     aggregateViewChangeTimer(v', cutoff, l, t)
@@ -232,7 +313,7 @@ viewChangeSent((v', n, C, P, l), l, t') :-
 // garbage collect by not persisting (:+)
 // - :+ persists stuff into the *next* timestamp
 // - :- adds stuff within the same tick and nothing else
-// - .persist r1 persists everything in r1 for each tick (makes it monotonic) 
+// - .persist r1 persists everything in r1 for each tick (makes it monotonic)
 // ASK: why broadcast view changes to all replicas if the primary sends V anyway? will replicas ever use received view changes that aren't in V? ans: yes, for liveness (see paper)
 viewChangeIn((v', n, C, P, l), sig, l, l', t')@async :-
     viewChangeOutbox((v', n, C, P, l), l, t),
@@ -347,7 +428,7 @@ newViewPreparedMessagesFromViewChangeSet(viewChangeMsgSet, ((v', n, d), sig), l,
 newViewPreparedMessagesFromViewChangeSet(viewChangeMsgSet, ((v', n, d), sig), l, t) :-
     contains(viewChangeMsgSet, ((v', _, _, _, _), _)), # should only be one v'
     emptySeqNumsFromViewChangeSet(viewChangeMsgSet, n, l, t),
-    NO-OP(op),
+    NO_OP(op),
     digest(op, d), // could just save the no-op digest directly for performance
     privateKeyStore(sk, l),
     signMsg(sk, (v', n, d), sig)
@@ -693,6 +774,6 @@ viewChangeMessageSetByView(v', viewChangeMsgSet, l, t') :-
     onlyOneViewChangeMessageSet(v', viewChangeMsgSet, l, t),
     next(t, t')
 
-// ASK?: can a rule only reference relations that have been defined before it? are only the rules before it evaluated by the time its evaluated?
+// ASK: do i assume that rules are evaluated in top-to-bottom order? so a rule can't reference relations that only have rules below it, and i should assume that only the rules before it are evaluated for the current timestep by the time its evaluated? ans: only rules with aggregations/negations have all rules in the body fully evaluated before the head is evaluated, every other rule can be evaluated as soon as each rule in the body has a fact
 // ASK: when do we actually send the checkpoint state s?
 // ASK: when transitioning into a new view v', we multicast new prepare messages in view v' to all replicas (many of which may not be in the new view yet, and will therefore reject the message); do we keep resending these prepare messages (and when do we know to stop, if so)?
