@@ -2,8 +2,8 @@
 // TODO: [x] new view log (verifying the O set)
 // TODO: [x] add liveness view change multicast pseudocode
 // TODO: [x] implement view-transition true/false state to prevent accepting consensus messages during view changes
-// TODO: define channel to send commands to execution
-// TODO: define channel to take in results of executing commands (to send to client + checkpointing)
+// TODO: [x] define channel to send commands to execution
+// TODO: [x] define channel to take in results of executing commands (to send to client + checkpointing)
 // TODO: create checkpointing logic
 // TODO: comments
 // TODO: remove all parentheses in outboxes
@@ -16,37 +16,32 @@
 ########## EDBs
 
 # EDBs provided by the system
-
 next(t, t')
-
 publicKeyStore(pk, l)
 privateKeyStore(sk, l)
-
 verifySignature(pk, msg, sig)
 signMsg(sk, msg, sig)
-
-# d is the digest of msg
-digest(msg, d)
-
-# set contains elem
-contains(set, elem)
-
-# one row per replica l
-replicas(l)
-
+digest(msg, d) # d is the digest of msg
+contains(set, elem) # set contains elem
+replicas(l) # one row per replica l
 
 # EDBs created for this protocol
-
 FAILURES(f)
 NO_OP(op)
 WATERMARK_WIDTH(k)
 CHECKPOINT_INTERVAL(k)
-
 REQUEST_EXPIRATION(delta)
 NEW_VIEW_EXPIRATION(delta)
 
 ########## end EDBs
 
+
+
+########## IDBs
+
+STATE_MACHINE(l') # the replica's own state machine
+
+########## end IDBs
 
 
 // TODO: define all these rules
@@ -59,7 +54,175 @@ viewPrimary(v, l)
 
 
 
-########## start code
+########## client requests
+
+requestVerifiedIn((o, clientTimestamp, l'), sig, l', l, t) :-
+    requestIn((o, clientTimestamp, l'), sig, l', l, t),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (o, clientTimestamp, l'), sig)
+
+// ASK?: say the client sends a request to a byzantine primary, who ignores it; the client then broadcasts this request to all replicas, who start a timer upon receiving it; say the timer expires, since only the primary can kick off the consensus process and this request hasnt satisfied the prepared predicate, is it just dropped/ignored when replicas move into the next view? does the new primary automatically kick off the consensus process with all "orphaned" requests?
+requestLog(o, clientTimestamp, l', sig, l, t') :-
+    requestVerifiedIn((o, clientTimestamp, l'), sig, l', l, t), # contacted directly
+    ¬attemptingViewChange(_, l, t),
+    ¬requestLog(o, clientTimestamp, l', sig, l, t), # no duplicates
+    next(t, t')
+
+requestLog(o, clientTimestamp, l', sig, l, t') :-
+    preprepareLog(_, _, _, o, clientTimestamp, l', sig, l, t), # taken from a preprepare
+    ¬requestLog(o, clientTimestamp, l', sig, l, t), # no duplicates
+    next(t, t')
+
+requestLog(o, clientTimestamp, l', sig, l, t') :-
+    requestLog(o, clientTimestamp, l', sig, l, t),
+    next(t, t')
+
+########## end client requests
+
+
+
+########## critical path
+
+preprepareVerifiedIn((v, n, d), sig, (o, clientTimestamp, clientLocation), clientSig, l', l, t) :-
+    preprepareIn((v, n, d), sig, (o, clientTimestamp, clientLocation), l', l, t),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (v, n, d), sig)
+    publicKeyStore(pk, clientLocation),
+    verifySignature(pk, (o, clientTimestamp, clientLocation), clientSig)
+
+preprepareLog(v, n, d, o, clientTimestamp, clientLocation, sig, l, t) :-
+    ... # accepted prepreps
+    ¬attemptingViewChange(_, l, t),
+    # should originate from primary of the view
+
+prepareVerifiedIn((v, n, d, l'), sig, l', l, t) :-
+    prepareIn((v, n, d, l'), sig, l', l, t),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (v, n, d, l'), sig)
+
+prepareLog(v, n, d, l', sig, l, t) :-
+    ¬attemptingViewChange(_, l, t),
+    ... # accepted prepares
+
+########## end critical path
+
+
+
+########## message commit
+
+prepareCertSize(v, n, d, count<l'>, l, t) :-
+    prepareLog(v, n, d, l', _, l, t)
+
+prepared(m, v, n, l, t) :-
+    preprepareLog(v, n, d, m, _, l, t),
+    prepareCertSize(v, n, d, certSize, l, t),
+    FAILURES(f),
+    certSize >= 2 * f + 1
+
+commitOutbox((v, n, d, l), l, t) :-
+    prepared(m, v, n, l, t),
+    digest(m, d)
+
+commitSent((v, n, d, l), l, t') :-
+    commitOutbox((v, n, d, l), l, t),
+    next(t, t')
+
+commitSent((v, n, d, l), l, t') :-
+    commitSent((v, n, d, l), l, t),
+    next(t, t')
+
+commitIn((v, n, d, l), sig, l, l', t')@async :-
+    commitOutbox((v, n, d, l), l, t),
+    ¬commitSent((v, n, d, l), l, t),
+    privateKeyStore(sk, l),
+    signMsg(sk, (v, n, d, l), sig),
+    replicas(l')
+
+commitVerifiedIn((v, n, d, l'), sig, l', l, t) :-
+    commitIn((v, n, d, l'), sig, l', l, t),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (v, n, d, l'), sig)
+
+commitLog(v, n, d, l', sig, l, t) :-
+    ¬attemptingViewChange(_, l, t),
+    ... # accepted commits
+
+########## end message commit
+
+
+
+########## command execution + client reply
+
+committedLocal((o, clientTimestamp, l'), v, n, l, t) :-
+    ...
+
+// ASK: do we execute a request m if committedLocal(m, v, n) is true for SOME v or only the CURRENT v?
+// ASK: since we only execute a request if committedLocal is true and we've executed all requests with seq nums before it; if it's the latter and we 1. satisfy committedLocal(m, v, n) but don't execute m because we're waiting on preceding requests to be executed, 2. complete a view change into v', 3. execute all requests preceding m, can we only execute m once committedLocal(m, v', n) is true (this implies that we redo consensus for it once the view change completes)?
+// ASK: if so, why do we have to redo consensus for messages satisfying committedLocal in the previous view if the only problem is that we haven't executed them? would it ever be possible for another message (or a no-op) to take over its sequence number? if not, why do we have to wait if we're guaranteed that only this message will ever be committed in this seq num?
+// ASK: to me, once committedLocal is true, i know nobody else will ever have a problem with me executing m at seq n; this agreement doesn't seem to hinge on my execution history of previous messages (it honestly seems independent of any other seq num in general); would a replica ever need to know my past execution history before making this promise? it doesn't seem like we ever share this information via consensus
+// ASK: this is basically asking if i can assume committedLocal(m, v, n) for some v => "nothing other than m will ever be executed at seq num n" and if "nothing other than m will ever be executed at seq num n" => "you can execute this as soon as the state machine allows it"
+// ASK: i guess this is a big roundabout way of asking if the queue to execute commands is independent from consensus after messages have been added, aka messages will never be removed from the queue for safety purposes
+// ans: seems like as soon as committedLocal is satisfied it can be scheduled for execution no matter what else happens, as soon as the state machine is ready you can just go for it regardless of where the consensus nodes are at
+executeCommandOutbox((o, n), l, t) :-
+    committedLocal((o, _, _), _, n, l, t),
+    latestExecutedCommandSeqNum(n'),
+    n = n' + 1
+
+executeCommandSent((o, n), l, t') :-
+    executeCommandOutbox((o, n), l, t),
+    next(t, t')
+
+executeCommandSent((o, n), l, t') :-
+    executeCommandSent((o, n), l, t),
+    next(t, t')
+
+// ASK?: do we need to sign messages being "sent" to the state machine (and likewise do we expect signatures on their replies)?
+executeCommandIn((o, n), sig, l, l', t')@async :-
+    executeCommandOutbox((o, n), l, t),
+    ¬executeCommandSent((o, n), l, t),
+    privateKeyStore(sk, l),
+    signMsg(sk, (o, n), sig),
+    STATE_MACHINE(l')
+
+executeCommandReplyIn((o, n, res), sig, l, l', t)@async :-
+    ... # reply sent via input channel
+
+executeCommandReplyVerifiedIn((o, n, res), sig, l', l, t) :-
+    executeCommandReplyIn((o, n, res), sig, l', l, t),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (o, n, res), sig)
+
+// ASK?: sanity check, is it okay for us to still reply to clients while in a view change? say a message satisfied committedLocal but by the time it's actuall executed we're in the middle of a view change
+executeCommandReplyLog(o, n, res, sig, l, t) :-
+    executeCommandReplyVerifiedIn((o, n, res), sig, _, l, t)
+
+latestExecutedCommandSeqNum(max<n>, l, t) :-
+    executeCommandReplyLog(_, n, _, _, l, t)
+
+replyOutbox((v, clientTimestamp, l', l, res), l, t) :-
+    executeCommandReplyLog(o, n, res, _, l, t),
+    currentView(v, l, t), // ASK?: do we want the view that the message was committed in or the view that we replied in?
+    committedLocal((o, clientTimestamp, l'), _, n, l, t) // NOTE: if we want the view the message was committed in use the view here
+
+replySent((v, clientTimestamp, l', l, res), l, t') :-
+    replyOutbox((v, clientTimestamp, l', l, res), l, t),
+    next(t, t')
+
+replySent((v, clientTimestamp, l', l, res), l, t') :-
+    replySent((v, clientTimestamp, l', l, res), l, t),
+    next(t, t')
+
+replyIn((v, clientTimestamp, l', l, res), sig, l, l', t')@async :-
+    replyOutbox((v, clientTimestamp, l', l, res), l, t),
+    ¬replySent((v, clientTimestamp, l', l, res), l, t),
+    privateKeyStore(sk, l),
+    signMsg(sk, (v, clientTimestamp, l', l, res), sig)
+
+########## end command execution + client reply
+
+
+
+########## checkpointing
 
 checkpointOutbox((n, d, l), l, t) :-
     ...
@@ -102,105 +265,7 @@ lowWatermark(h, l, t) :-
 lowWatermark(0, l, t) :-
     ¬stableCheckpoint(_, _, l, t)
 
-preprepareVerifiedIn((v, n, d), sig, m, l', l, t) :-
-    preprepareIn((v, n, d), sig, m, l', l, t),
-    publicKeyStore(pk, l'),
-    verifySignature(pk, (v, n, d), sig)
-
-preprepareLog(v, n, d, m, sig, l, t) :-
-    ... # accepted prepreps
-    ¬attemptingViewChange(_, l, t),
-    # should originate from primary of the view
-
-prepareVerifiedIn((v, n, d, l'), sig, l', l, t) :-
-    prepareIn((v, n, d, l'), sig, l', l, t),
-    publicKeyStore(pk, l'),
-    verifySignature(pk, (v, n, d, l'), sig)
-
-prepareLog(v, n, d, l', sig, l, t) :-
-    ¬attemptingViewChange(_, l, t),
-    ... # accepted prepares
-
-prepareCertSize(v, n, d, count<l'>, l, t) :-
-    prepareLog(v, n, d, l', _, l, t)
-
-prepared(m, v, n, l, t) :-
-    preprepareLog(v, n, d, m, _, l, t),
-    prepareCertSize(v, n, d, certSize, l, t),
-    FAILURES(f),
-    certSize >= 2 * f + 1
-
-commitOutbox((v, n, d, l), l, t) :-
-    prepared(m, v, n, l, t),
-    digest(m, d)
-
-commitSent((v, n, d, l), l, t') :-
-    commitOutboxcommitOutbox((v, n, d, l), l, t),
-    next(t, t')
-
-commitSent((v, n, d, l), l, t') :-
-    commitSent((v, n, d, l), l, t),
-    next(t, t')
-
-commitIn((v, n, d, l), sig, l, l', t')@async :-
-    commitOutbox((v, n, d, l), l, t),
-    ¬commitSent((v, n, d, l), l, t),
-    privateKeyStore(sk, l),
-    signMsg(sk, (v, n, d, l), sig),
-    replicas(l')
-
-commitVerifiedIn((v, n, d, l'), sig, l', l, t) :-
-    commitIn((v, n, d, l'), sig, l', l, t),
-    publicKeyStore(pk, l'),
-    verifySignature(pk, (v, n, d, l'), sig)
-
-commitLog(v, n, d, l', sig, l, t) :-
-    ¬attemptingViewChange(_, l, t),
-    ... # accepted commits
-
-requestVerifiedIn((o, clientTimestamp, l'), sig, l', l, t) :-
-    requestIn((o, clientTimestamp, l'), sig, l', l, t),
-    publicKeyStore(pk, l'),
-    verifySignature(pk, (o, clientTimestamp, l'), sig)
-
-requestLog(o, clientTimestamp, c, sig, l, t) :-
-    ¬attemptingViewChange(_, l, t),
-    ...
-
-committedLocal(m, v, n, l, t) :-
-    ...
-
-// ASK: do we execute a request m if committedLocal(m, v, n) is true for SOME v or only the CURRENT v?
-// ASK: since we only execute a request if committedLocal is true and we've executed all requests with seq nums before it; if it's the latter and we 1. satisfy committedLocal(m, v, n) but don't execute m because we're waiting on preceding requests to be executed, 2. complete a view change into v', 3. execute all requests preceding m, can we only execute m once committedLocal(m, v', n) is true (this implies that we redo consensus for it once the view change completes)?
-// ASK: if so, why do we have to redo consensus for messages satisfying committedLocal in the previous view if the only problem is that we haven't executed them? would it ever be possible for another message (or a no-op) to take over its sequence number? if not, why do we have to wait if we're guaranteed that only this message will ever be committed in this seq num?
-// ASK: to me, once committedLocal is true, i know nobody else will ever have a problem with me executing m at seq n; this agreement doesn't seem to hinge on my execution history of previous messages (it honestly seems independent of any other seq num in general); would a replica ever need to know my past execution history before making this promise? it doesn't seem like we ever share this information via consensus
-// ASK: this is basically asking if i can assume committedLocal(m, v, n) for some v => "nothing other than m will ever be executed at seq num n" and if "nothing other than m will ever be executed at seq num n" => "you can execute this as soon as the state machine allows it"
-// ASK: i guess this is a big roundabout way of asking if the queue to execute commands is independent from consensus after messages have been added, aka messages will never be removed from the queue for safety purposes
-// ans: seems like as soon as committedLocal is satisfied it can be scheduled for execution no matter what else happens, as soon as the state machine is ready you can just go for it regardless of where the consensus nodes are at
-executeCommandOutbox(m, n, l, t)
-    ...
-
-executeCommandSent(m, n, l, t) :-
-    ...
-
-executeCommandSent(m, n, l, t') :-
-    executeCommandOutbox(m, n, l, t),
-    next(t, t')
-
-executeCommandIn()@async :-
-    executeCommandOutbox(),
-    ¬executeCommandSent(),
-    ...
-
-executeCommandReplyIn()@async :-
-    ... # reply sent via input channel
-
-executeCommandReplyVerifiedIn() :-
-    ...
-
-// ASK?: sanity check, is it okay for us to still reply to clients while in a view change? say a message satisfied committedLocal but by the time it's actuall executed we're in the middle of a view change
-executeCommandReplyLog() :-
-    ...
+########## end checkpointing
 
 
 
@@ -388,7 +453,7 @@ viewChangeIn((v', n, C, P, l), sig, l, l', t')@async :-
 viewChangeVerifiedIn((v, n, C, P, l'), sig, l', l, t) :-
     viewChangeIn((v, n, C, P, l'), sig, l', l, t),
     publicKeyStore(pk, l'),
-    verifySignature(pk, (n, d, l'), sig)
+    verifySignature(pk, (v, n, C, P, l'), sig)
 
 viewChangeLog(v, n, C, P, l', sig, l, t) :-
     ... # accepted view-changes
@@ -531,7 +596,7 @@ newViewIn((v', viewChangeMsgSet, O), sig, l, l', t')@async :-
 newViewVerifiedIn((v', viewChangeMsgSet, O), sig, l', l, t) :-
     newViewIn((v', viewChangeMsgSet, O), sig, l', l, t),
     publicKeyStore(pk, l'),
-    verifySignature(pk, (n, d, l'), sig)
+    verifySignature(pk, (v', viewChangeMsgSet, O), sig)
 
 # new-view viewChangeMsgSet well formed conditions:
 # - [1] at least v_n >= 2f + 1 view-change messages
@@ -843,6 +908,7 @@ viewChangeMessageSetByView(v', viewChangeMsgSet, l, t') :-
 
 ########## end verifying new-view messages
 
+// ASK?: if there are multiple duplicate rows in a relation, will future relations that reference these rules in their body also be prone to duplicates (assuming they don't aggregate)?
 // ASK: do i assume that rules are evaluated in top-to-bottom order? so a rule can't reference relations that only have rules below it, and i should assume that only the rules before it are evaluated for the current timestep by the time its evaluated? ans: only rules with aggregations/negations have all rules in the body fully evaluated before the head is evaluated, every other rule can be evaluated as soon as each rule in the body has a fact
 // ASK: when do we actually send the checkpoint state s?
 // ASK: when transitioning into a new view v', we multicast new prepare messages in view v' to all replicas (many of which may not be in the new view yet, and will therefore reject the message); do we keep resending these prepare messages (and when do we know to stop, if so)?
