@@ -141,8 +141,41 @@ requestLog(o, clientTimestamp, c, sig, l, t) :-
 committedLocal(m, v, n, l, t) :-
     ...
 
+// ASK: do we execute a request m if committedLocal(m, v, n) is true for SOME v or only the CURRENT v?
+// ASK: since we only execute a request if committedLocal is true and we've executed all requests with seq nums before it; if it's the latter and we 1. satisfy committedLocal(m, v, n) but don't execute m because we're waiting on preceding requests to be executed, 2. complete a view change into v', 3. execute all requests preceding m, can we only execute m once committedLocal(m, v', n) is true (this implies that we redo consensus for it once the view change completes)?
+// ASK: if so, why do we have to redo consensus for messages satisfying committedLocal in the previous view if the only problem is that we haven't executed them? would it ever be possible for another message (or a no-op) to take over its sequence number? if not, why do we have to wait if we're guaranteed that only this message will ever be committed in this seq num?
+// ASK: to me, once committedLocal is true, i know nobody else will ever have a problem with me executing m at seq n; this agreement doesn't seem to hinge on my execution history of previous messages (it honestly seems independent of any other seq num in general); would a replica ever need to know my past execution history before making this promise? it doesn't seem like we ever share this information via consensus
+// ASK: this is basically asking if i can assume committedLocal(m, v, n) for some v => "nothing other than m will ever be executed at seq num n" and if "nothing other than m will ever be executed at seq num n" => "you can execute this as soon as the state machine allows it"
+// ASK: i guess this is a big roundabout way of asking if the queue to execute commands is independent from consensus after messages have been added, aka messages will never be removed from the queue for safety purposes
+// ans: seems like as soon as committedLocal is satisfied it can be scheduled for execution no matter what else happens, as soon as the state machine is ready you can just go for it regardless of where the consensus nodes are at
+executeCommandOutbox(m, n, l, t)
+    ...
+
+executeCommandSent(m, n, l, t) :-
+    ...
+
+executeCommandSent(m, n, l, t') :-
+    executeCommandOutbox(m, n, l, t),
+    next(t, t')
+
+executeCommandIn()@async :-
+    executeCommandOutbox(),
+    ¬executeCommandSent(),
+    ...
+
+executeCommandReplyIn()@async :-
+    ... # reply sent via input channel
+
+executeCommandReplyVerifiedIn() :-
+    ...
+
+executeCommandReplyLog() :-
+    ...
+
 pendingRequests((o, clientTimestamp, c), l, t) :-
     requestLog(o, clientTimestamp, c, _, l, t),
+    // TODO: committedLocal is not technically correct, we only stop the timer once we've executed the request (in practice, once we've received the result of executing the request)
+    // NOTE: okay it seems like it's fine, since if it's committedLocal we know it'll be executed eventually so we can treat it as completed the consensus process
     ¬committedLocal((o, clientTimestamp, c), _, _, l, t)
 
 requestCreatedTimestamps((o, clientTimestamp, c), t, l, t') :-
