@@ -3,8 +3,10 @@
 // TODO: [x] add liveness view change multicast pseudocode
 // TODO: [x] implement view-transition true/false state to prevent accepting consensus messages during view changes
 // TODO: [x] define channel to send commands to execution
-// TODO: [x] define channel to take in results of executing commands (to send to client + checkpointing)
+// TODO: [x] define channel to take in results of executing commands (to send to client)
+// TODO: [x] define channel to take in copy of state machine state (to send for checkpointing)
 // TODO: create checkpointing logic
+// TODO: create logic to find missing client messages + checkpoint states
 // TODO: comments
 // TODO: remove all parentheses in outboxes
 // TODO: remove all ls and ts to adhere to shadaj syntax
@@ -224,8 +226,44 @@ replyIn((v, clientTimestamp, l', l, res), sig, l, l', t')@async :-
 
 ########## checkpointing
 
+// ASK?: say we snapshot every 10; what happens if we get the replies from executing two commands at seq num 10 and 11 concurrently (we get replies from the state machine in the same timestep), and thus the state machine state only reflects the state after seq num 11 and not 10? do we skip making a checkpoint? should we have the state machine reply with the entire state for each reply on a checkpoint seq num, since we can't guarantee that replies from the state machine are staggered into distinct timesteps?
+# take a snapshot every CHECKPOINT_INTERVAL
+snapshotRequestOutbox((n), l, t) :-
+    # seq num only acts as request id, since we can only snapshot in the present
+    latestExecutedCommandSeqNum(n, l, t), // NOTE: assumes that n will not be incremented more than once per timestep, aka replies from the state machine will not arrive concurrently
+    CHECKPOINT_INTERVAL(k),
+    n % k = 0
+
+snapshotRequestOutbox((n), l, t') :-
+    snapshotRequestOutbox((n), l, t),
+    next(t, t')
+
+snapshotRequestSent((n), l, t') :-
+    snapshotRequestSent((n), l, t),
+    sent(t, t')
+
+checkpointIn((n), sig, l, l', t')@async :-
+    snapshotRequestOutbox((n), l', t),
+    ¬snapshotRequestSent((n), l', t),
+    privateKeyStore(sk, l),
+    signMsg(sk, (n), sig),
+    replicas(l')
+
+snapshotIn((n, s), sig, l, l', t)@async :-
+    ... # reply sent via input channel
+
+snapshotVerifiedIn((n, s), sig, l', l, t) :-
+    snapshotIn((n, s), sig, l', l, t),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (n, s), sig)
+
+snapshotLog(n, s, sig, l, t) :-
+    snapshotVerifiedIn((n, s), sig, _, l, t)
+
+# broadcast checkpoint messages whenever a snapshot comes in, we defer the timing logic of snapshots to snapshotRequest
 checkpointOutbox((n, d, l), l, t) :-
-    ...
+    snapshotLog(n, s, _, l, t),
+    digest(s, d)
 
 checkpointSent((n, d, l), l, t') :-
     checkpointOutbox((n, d, l), l, t),
