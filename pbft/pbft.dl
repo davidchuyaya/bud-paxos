@@ -5,7 +5,8 @@
 // TODO: [x] define channel to send commands to execution
 // TODO: [x] define channel to take in results of executing commands (to send to client)
 // TODO: [x] define channel to take in copy of state machine state (to send for checkpointing)
-// TODO: create checkpointing logic
+// TODO: [x] create checkpointing logic
+// TODO: account for watermarks in log messages
 // TODO: create logic to find missing client messages + checkpoint states
 // TODO: comments
 // TODO: remove all parentheses in outboxes
@@ -18,6 +19,7 @@
 ########## EDBs
 
 # EDBs provided by the system
+ZERO(n)
 next(t, t')
 publicKeyStore(pk, l)
 privateKeyStore(sk, l)
@@ -34,6 +36,7 @@ WATERMARK_WIDTH(k)
 CHECKPOINT_INTERVAL(k)
 REQUEST_EXPIRATION(delta)
 NEW_VIEW_EXPIRATION(delta)
+INITIAL_STATE_DIGEST(d)
 
 ########## end EDBs
 
@@ -285,8 +288,11 @@ checkpointVerifiedIn((n, d, l'), sig, l', l, t) :-
     publicKeyStore(pk, l'),
     verifySignature(pk, (n, d, l'), sig)
 
+// ASK?: planning on only accepting one checkpoint message from any (n, l') pair, are there no requirements for accepting checkpoint messages?
 checkpointLog(n, d, l', sig, l, t) :-
-    ... # accepted checkpoints
+    checkpointVerifiedIn((n, d, l'), sig, l', l, t),
+    ¬checkpointLog(n, d', l', sig, l, t), # we only accept the first checkpoint message from any (n, l') pair
+    d != d'
 
 checkpointCertSize(n, d, count<l'>, l, t) :-
     checkpointLog(n, d, l', _, l, t)
@@ -296,12 +302,13 @@ stableCheckpoint(n, d, l, t) :-
     FAILURES(f),
     certSize >= 2 * f + 1
 
+# initialize a blank checkpoint at zero for watermark purposes
+stableCheckpoint(n, d, l, t) :-
+    ZERO(n),
+    INITIAL_STATE(d)
+
 lowWatermark(h, l, t) :-
     lastStableCheckpoint(h, l, t)
-
-// ASK?: initialize to zero?
-lowWatermark(0, l, t) :-
-    ¬stableCheckpoint(_, _, l, t)
 
 ########## end checkpointing
 
