@@ -126,4 +126,6 @@ fabric.properties
 
 # budplot
 bud_doc/
+
+# Ignore MacOS DS_Store
 .DS_Store
