@@ -241,6 +241,7 @@ requestExpiredViewChangeTimer(v', max<cutoff>, l, t) :-
     pendingRequests(_, l, t), # must have a currently pending request
     currentView(v, l, t),
     v' = v + 1, # will attempt view change for v + 1
+    ¬viewChangeSent((v', _, _, _, _), l, t), # not already attempting a view change for v'; not using attemptingViewChange because that includes the timestep that the view-change is sent and negating that would cause a negation cycle
     latestCommittedAndEarliestPendingTimestamps(timestamp, l, t), # find max(latest committed + buffer, earliest pending + buffer)
     REQUEST_EXPIRATION(delta),
     cutoff = timestamp + delta # add buffer
