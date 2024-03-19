@@ -126,3 +126,4 @@ fabric.properties
 
 # budplot
 bud_doc/
+.DS_Store
