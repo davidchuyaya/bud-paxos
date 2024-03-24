@@ -9,9 +9,9 @@
 // TODO: [x] account for watermarks in log messages
 // TODO: [x] create logic to find missing client messages + checkpoint states
 // TODO: [x] rework snapshots so that they silently arrive instead of being requested
-// TODO: take stable checkpoint proofs from accepted new view messages
-// TODO: take/send prepreps + prepares from the O set of accepted new view messages before entering the next view
-// TODO: add ability to replace the current state with later stable checkpoint snapshot
+// TODO: [x] take stable checkpoint proofs from accepted new view messages
+// TODO: [x] take/send prepreps + prepares from the O set of accepted new view messages before entering the next view
+// TODO: [x] add ability to replace the current state with later stable checkpoint snapshot
 // TODO: implement client message sequencing
 // TODO: add in and rework david's critical path code
 // TODO: comments
@@ -208,7 +208,6 @@ executeCommandReplyVerifiedIn((o, n, res), sig, l', l, t) :-
 executeCommandReplyLog(o, n, res, sig, l, t) :-
     executeCommandReplyVerifiedIn((o, n, res), sig, _, l, t)
 
-// NOTE: may be deprecated
 latestExecutedCommandSeqNum(max<n>, l, t) :-
     executeCommandReplyLog(_, n, _, _, l, t)
 
@@ -253,7 +252,7 @@ snapshotLog(n, s, l, t) :-
 
 # broadcast checkpoint messages whenever a snapshot comes in, we defer the timing logic of snapshots to snapshotRequest
 checkpointOutbox((n, d, l), l, t) :-
-    snapshotLog(n, s, _, l, t),
+    snapshotLog(n, s, l, t),
     digest(s, d)
 
 checkpointSent((n, d, l), l, t') :-
@@ -297,6 +296,29 @@ stableCheckpoint(n, d, l, t) :-
 
 lowWatermark(h, l, t) :-
     lastStableCheckpoint(h, l, t)
+
+# send request to overwrite the state if we have a stable checkpoint snapshot above our latest executed command
+stateOverwriteOutbox((n', s), l, t) :-
+    stableCheckpoint(n', d, l, t),
+    latestExecutedCommandSeqNum(n, l, t),
+    n' > n,
+    snapshotLog(n', s, l, t)
+
+stateOverwriteSent((n, s), l, t') :-
+    stateOverwriteOutbox((n, s), l, t),
+    next(t, t')
+
+stateOverwriteSent((n, s), l, t') :-
+    stateOverwriteSent((n, s), l, t),
+    next(t, t')
+
+# the state machine will ignore the request if its state is more recent than the snapshot
+stateOverwriteIn((n, s), sig, l, l', t')@async :-
+    stateOverwriteOutbox((n, s), l, t),
+    ¬stateOverwriteSent((n, s), l, t),
+    privateKeyStore(sk, l),
+    signMsg(sk, (n, s), sig),
+    STATE_MACHINE(l')
 
 ########## end checkpointing
 
@@ -977,7 +999,7 @@ checkpointIn((n, d, l'), sig, l', l, t) :-
 peerSnapshotRequestOutbox((l, n), l, t) :-
     stableCheckpoint(n, d, l, t),
     lastStableCheckpoint(n, l, t),
-    ¬snapshotLog(n, _, _, l, t)
+    ¬snapshotLog(n, _, l, t)
 
 peerSnapshotRequestSent((l, n), l, t') :-
     peerSnapshotRequestOutbox((l, n), l, t),
@@ -1011,7 +1033,7 @@ peerSnapshotRequestLog(l', n, sig, l, t) :-
 peerSnapshotRequestReplyOutbox((s, C, l'), l, t) :-
     peerSnapshotRequestLog(l', _, sig, l, t),
     lastStableCheckpoint(n, l, t),
-    snapshotLog(n, s, _, l, t),
+    snapshotLog(n, s, l, t),
     stableCheckpointProof(n, _, C, l, t)
 
 peerSnapshotRequestReplySent((s, C, l'), l, t') :-
