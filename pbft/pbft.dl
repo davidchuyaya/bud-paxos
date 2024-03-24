@@ -6,14 +6,18 @@
 // TODO: [x] define channel to take in results of executing commands (to send to client)
 // TODO: [x] define channel to take in copy of state machine state (to send for checkpointing)
 // TODO: [x] create checkpointing logic
-// TODO: account for watermarks in log messages
+// TODO: [x] account for watermarks in log messages
 // TODO: create logic to find missing client messages + checkpoint states
+// TODO: rework snapshots so that they silently arrive instead of being requested
+// TODO: take stable checkpoint proofs from accepted new view messages
+// TODO: add ability to replace the current state with later stable checkpoint snapshot
+// TODO: implement client message sequencing
+// TODO: add in and rework david's critical path code
 // TODO: comments
 // TODO: remove all parentheses in outboxes
 // TODO: remove all ls and ts to adhere to shadaj syntax
 // TODO: find which relations are garbage collected and leave question marks for those that you're unsure about (like watermarks)
 // TODO: how to garbage collect with checkpoints? oooh the condition in msgLog that requires seqNum >= h might have a double use
-// TODO: move in david's critical path code
 // TODO: client implementation (if no response from primary broadcast to all nodes)
 // ∈
 ########## EDBs
@@ -58,7 +62,7 @@ requestVerifiedIn((o, clientTimestamp, l'), sig, l', l, t) :-
     publicKeyStore(pk, l'),
     verifySignature(pk, (o, clientTimestamp, l'), sig)
 
-// ASK?: say the client sends a request to a byzantine primary, who ignores it; the client then broadcasts this request to all replicas, who start a timer upon receiving it; say the timer expires, since only the primary can kick off the consensus process and this request hasnt satisfied the prepared predicate, is it just dropped/ignored when replicas move into the next view? does the new primary automatically kick off the consensus process with all "orphaned" requests?
+// ASK: say the client sends a request to a byzantine primary, who ignores it; the client then broadcasts this request to all replicas, who start a timer upon receiving it; say the timer expires, since only the primary can kick off the consensus process and this request hasnt satisfied the prepared predicate, is it just dropped/ignored when replicas move into the next view? does the new primary automatically kick off the consensus process with all "orphaned" requests? ans: the new primary should kick off the consensus process with orphaned requests, if a client broadcasts a message it should eventually be committed
 requestLog(o, clientTimestamp, l', sig, l, t') :-
     requestVerifiedIn((o, clientTimestamp, l'), sig, l', l, t), # contacted directly
     ¬attemptingViewChange(_, l, t),
@@ -164,6 +168,7 @@ commitLog(v, n, d, l', sig, l, t) :-
 ########## command execution + client reply
 
 committedLocal((o, clientTimestamp, l'), v, n, l, t) :-
+    prepared((o, clientTimestamp, l'), v, n, l, t),
     ...
 
 // ASK: do we execute a request m if committedLocal(m, v, n) is true for SOME v or only the CURRENT v?
@@ -186,7 +191,7 @@ executeCommandSent((o, n), l, t') :-
     executeCommandSent((o, n), l, t),
     next(t, t')
 
-// ASK?: do we need to sign messages being "sent" to the state machine (and likewise do we expect signatures on their replies)?
+// ASK: do we need to sign messages being "sent" to the state machine (and likewise do we expect signatures on their replies)? ans: yes, the state machine can be thought of as decoupled
 executeCommandIn((o, n), sig, l, l', t')@async :-
     executeCommandOutbox((o, n), l, t),
     ¬executeCommandSent((o, n), l, t),
@@ -202,7 +207,7 @@ executeCommandReplyVerifiedIn((o, n, res), sig, l', l, t) :-
     publicKeyStore(pk, l'),
     verifySignature(pk, (o, n, res), sig)
 
-// ASK?: sanity check, is it okay for us to still reply to clients while in a view change? say a message satisfied committedLocal but by the time it's actuall executed we're in the middle of a view change
+// ASK: sanity check, is it okay for us to still reply to clients while in a view change? say a message satisfied committedLocal but by the time it's actually executed we're in the middle of a view change; ans: yes
 executeCommandReplyLog(o, n, res, sig, l, t) :-
     executeCommandReplyVerifiedIn((o, n, res), sig, _, l, t)
 
@@ -211,7 +216,7 @@ latestExecutedCommandSeqNum(max<n>, l, t) :-
 
 replyOutbox((v, clientTimestamp, l', l, res), l, t) :-
     executeCommandReplyLog(o, n, res, _, l, t),
-    currentView(v, l, t), // ASK?: do we want the view that the message was committed in or the view that we replied in?
+    currentView(v, l, t), // ASK: do we want the view that the message was committed in or the view that we replied in? ans: the view we replied in, the client wants to know who the leader is
     committedLocal((o, clientTimestamp, l'), _, n, l, t) // NOTE: if we want the view the message was committed in use the view here
 
 replySent((v, clientTimestamp, l', l, res), l, t') :-
@@ -234,7 +239,7 @@ replyIn((v, clientTimestamp, l', l, res), sig, l, l', t')@async :-
 
 ########## checkpointing
 
-// ASK?: say we snapshot every 10; what happens if we get the replies from executing two commands at seq num 10 and 11 concurrently (we get replies from the state machine in the same timestep), and thus the state machine state only reflects the state after seq num 11 and not 10? do we skip making a checkpoint? should we have the state machine reply with the entire state for each reply on a checkpoint seq num, since we can't guarantee that replies from the state machine are staggered into distinct timesteps?
+// ASK: say we snapshot every 10; what happens if we get the replies from executing two commands at seq num 10 and 11 concurrently (we get replies from the state machine in the same timestep), and thus the state machine state only reflects the state after seq num 11 and not 10? do we skip making a checkpoint? should we have the state machine reply with the entire state for each reply on a checkpoint seq num, since we can't guarantee that replies from the state machine are staggered into distinct timesteps? ans: have the state machine send you snapshots independently, rather than as a response to a request; the state machine always executes commands sequentially, so it can send the snapshot before executing the next command
 # take a snapshot every CHECKPOINT_INTERVAL
 snapshotRequestOutbox((n), l, t) :-
     # seq num only acts as request id, since we can only snapshot in the present
@@ -250,14 +255,14 @@ snapshotRequestSent((n), l, t') :-
     snapshotRequestSent((n), l, t),
     sent(t, t')
 
-checkpointIn((n), sig, l, l', t')@async :-
+checkpointSnapshotIn((n), sig, l, l', t')@async :-
     snapshotRequestOutbox((n), l', t),
     ¬snapshotRequestSent((n), l', t),
     privateKeyStore(sk, l),
     signMsg(sk, (n), sig),
     replicas(l')
 
-snapshotIn((n, s), sig, l, l', t)@async :-
+snapshotIn((n, s), sig, l, l', t')@async :-
     ... # reply sent via input channel
 
 snapshotVerifiedIn((n, s), sig, l', l, t) :-
@@ -265,8 +270,9 @@ snapshotVerifiedIn((n, s), sig, l', l, t) :-
     publicKeyStore(pk, l'),
     verifySignature(pk, (n, s), sig)
 
-snapshotLog(n, s, sig, l, t) :-
-    snapshotVerifiedIn((n, s), sig, _, l, t)
+# dropped the signature to allow for other avenues of accepting snapshots (peer requests)
+snapshotLog(n, s, l, t) :-
+    snapshotVerifiedIn((n, s), _, _, l, t)
 
 # broadcast checkpoint messages whenever a snapshot comes in, we defer the timing logic of snapshots to snapshotRequest
 checkpointOutbox((n, d, l), l, t) :-
@@ -293,7 +299,7 @@ checkpointVerifiedIn((n, d, l'), sig, l', l, t) :-
     publicKeyStore(pk, l'),
     verifySignature(pk, (n, d, l'), sig)
 
-// ASK?: planning on only accepting one checkpoint message from any (n, l') pair, are there no requirements for accepting checkpoint messages?
+// ASK: planning on only accepting one checkpoint message from any (n, l') pair, are there no requirements for accepting checkpoint messages? ans: yep
 checkpointLog(n, d, l', sig, l, t) :-
     checkpointVerifiedIn((n, d, l'), sig, l', l, t),
     ¬checkpointLog(n, d', l', sig, l, t), # we only accept the first checkpoint message from any (n, l') pair
@@ -929,7 +935,7 @@ viewChangeMsgSetUncheckpointedPreparedProofPreprepareSignatureValid(viewChangeMs
     publicKeyStore(pk, l'),
     verifySignature(pk, (msgView, n, d), preprepSig)
 
-// ASK?: is there a strict requirement on whether or not we should accept new-view messages with views higher than our own? accepting new-view messages with lower views should not change anything in practice, but just wondering
+// ASK: is there a strict requirement on whether or not we should accept new-view messages with views higher than our own? accepting new-view messages with lower views should not change anything in practice, but just wondering; ans: you can ignore all messages with lower views
 # accepted new-view messages
 newViewLog(v', viewChangeMsgSet, O, sig, l', l, t) :-
     newViewWellFormedIn((v', viewChangeMsgSet, O), sig, l', l, t), # is well formed
@@ -972,7 +978,131 @@ viewChangeMessageSetByView(v', viewChangeMsgSet, l, t') :-
 
 ########## end verifying new-view messages
 
-// ASK?: if there are multiple duplicate rows in a relation, will future relations that reference these rules in their body also be prone to duplicates (assuming they don't aggregate)?
+
+
+########## retrieving missing checkpoint
+
+# if i have a stable checkpoint but i don't have the corresponding snapshot send out requests
+peerSnapshotRequestOutbox((l, n), l, t) :-
+    stableCheckpoint(n, d, l, t),
+    lastStableCheckpoint(n, l, t),
+    ¬snapshotLog(n, _, _, l, t)
+
+peerSnapshotRequestSent((l, n), l, t') :-
+    peerSnapshotRequestOutbox((l, n), l, t),
+    next(t, t')
+
+peerSnapshotRequestSent((l, n), l, t') :-
+    peerSnapshotRequestSent((l, n), l, t),
+    next(t, t')
+
+# contact all nodes that sent me checkpoint messages for my stable checkpoint
+peerSnapshotRequestIn((l, n), sig, l, l', t')@async :-
+    peerSnapshotRequestOutbox((l, n), l, t),
+    ¬peerSnapshotRequestSent((l, n), l, t),
+    privateKeyStore(sk, l),
+    signMsg(sk, (l, n), sig),
+    stableCheckpointProof(n, d, C, l, t),
+    contains(C, ((n, d, l'), _))
+
+peerSnapshotRequestVerifiedIn((l', n), sig, l', l, t) :-
+    peerSnapshotRequestIn((l', n), sig, l', l, t),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (l', n), sig)
+
+# if node is correct, n is guaranteed to be less than (if it's behind) or equal to (if it's caught up) than our last stable checkpoint; ignored if otherwise
+peerSnapshotRequestLog(l', n, sig, l, t) :-
+    peerSnapshotRequestVerifiedIn((l', n), sig, l', l, t),
+    lowWatermark(h, l, t),
+    n <= h
+
+# reply with snapshot of your highest stable checkpoint
+peerSnapshotRequestReplyOutbox((s, C, l'), l, t) :-
+    peerSnapshotRequestLog(l', _, sig, l, t),
+    lastStableCheckpoint(n, l, t),
+    snapshotLog(n, s, _, l, t),
+    stableCheckpointProof(n, _, C, l, t)
+
+peerSnapshotRequestReplySent((s, C, l'), l, t') :-
+    peerSnapshotRequestReplyOutbox((s, C, l'), l, t),
+    next(t, t')
+
+peerSnapshotRequestReplySent((s, C, l'), l, t') :-
+    peerSnapshotRequestReplySent((s, C, l'), l, t),
+    next(t, t')
+
+peerSnapshotRequestReplyIn((s, C, l'), sig, l, l', t')@async :-
+    peerSnapshotRequestReplyOutbox((s, C, l'), l, t),
+    ¬peerSnapshotRequestReplyOutbox((s, C, l'), l, t),
+    privateKeyStore(sk, l),
+    signMsg(sk, (s, C, l'), sig)
+
+peerSnapshotRequestReplyVerifiedIn((s, C, l), sig, l', l, t) :-
+    peerSnapshotRequestReplyIn((s, C, l), sig, l', l, t),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (s, C, l), sig)
+
+// genius mode activated
+// TODO: remove the "genius mode activated" comment
+# feed checkpoint messages from sent proof into checkpointIn
+checkpointIn((n, d, l'), sig, l', l, t) :-
+    peerSnapshotRequestReplyVerifiedIn((_, C, _), _, _, l, t),
+    contains(C, ((n, d, l'), sig))
+
+# accept the snapshot from the reply if s now matches the digest of our last stable checkpoint
+snapshotLog(n, s, l, t) :-
+    peerSnapshotRequestReplyVerifiedIn((s, _, _), _, _, l, t),
+    lastStableCheckpoint(n, l, t),
+    stableCheckpoint(n, d, l, t),
+    digest(s, d)
+
+########## end retrieving missing checkpoint
+
+
+
+########## retrieving missing client messages
+
+// ASK?: if i satisfy all requirements of committedLocal but i just don't have the message move forward
+// ASK?: if i have a pre-prepare but not the corresponding message move forward
+peerClientMessageRequestOutbox() :-
+    ...
+
+// TODO: sent
+
+// NOTE: contact all nodes that sent me commit messages asking for their client request at seq n, take any reply whose message matches that of the digest
+peerClientMessageRequestIn()@async :-
+    ...
+
+peerClientMessageRequestVerifiedIn() :-
+    ...
+
+peerClientMessageRequestLog() :-
+    ...
+
+// TODO: additional logic here...
+// ASK?: what if a node has fallen arbitrarily behind other nodes, such that it requests a client message that's been garbage collected everywhere else? is it others' responsibility to send them a (later) stable checkpoint if they request a client message that's been garbage collected, or is it safe to just ignore the request?
+
+peerClientMessageReplyOutbox() :-
+    ...
+
+// TODO: sent
+
+peerClientMessageReplyIn()@async :-
+    ...
+
+peerClientMessageReplyVerifiedIn() :-
+    ...
+
+peerClientMessageReplyLog() :-
+    ...
+
+// TODO: certSize quorum logic
+
+// TODO: inserting client message into requestLog
+
+########## end retrieving missing client messages
+
+// ASK: if there are multiple duplicate rows in a relation, will future relations that reference these rules in their body also be prone to duplicates (assuming they don't aggregate)? ans: tables are sets so duplicate rows will be merged
 // ASK: do i assume that rules are evaluated in top-to-bottom order? so a rule can't reference relations that only have rules below it, and i should assume that only the rules before it are evaluated for the current timestep by the time its evaluated? ans: only rules with aggregations/negations have all rules in the body fully evaluated before the head is evaluated, every other rule can be evaluated as soon as each rule in the body has a fact
 // ASK: when do we actually send the checkpoint state s?
 // ASK: when transitioning into a new view v', we multicast new prepare messages in view v' to all replicas (many of which may not be in the new view yet, and will therefore reject the message); do we keep resending these prepare messages (and when do we know to stop, if so)?
