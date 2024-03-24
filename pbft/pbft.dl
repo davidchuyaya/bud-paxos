@@ -10,6 +10,7 @@
 // TODO: create logic to find missing client messages + checkpoint states
 // TODO: rework snapshots so that they silently arrive instead of being requested
 // TODO: take stable checkpoint proofs from accepted new view messages
+// TODO: take/send prepreps + prepares from the O set of accepted new view messages before entering the next view
 // TODO: add ability to replace the current state with later stable checkpoint snapshot
 // TODO: implement client message sequencing
 // TODO: add in and rework david's critical path code
@@ -18,6 +19,7 @@
 // TODO: remove all ls and ts to adhere to shadaj syntax
 // TODO: find which relations are garbage collected and leave question marks for those that you're unsure about (like watermarks)
 // TODO: how to garbage collect with checkpoints? oooh the condition in msgLog that requires seqNum >= h might have a double use
+// TODO: check that i don't rely on the existence of duplicate rows
 // TODO: client implementation (if no response from primary broadcast to all nodes)
 // ∈
 ########## EDBs
@@ -63,20 +65,12 @@ requestVerifiedIn((o, clientTimestamp, l'), sig, l', l, t) :-
     verifySignature(pk, (o, clientTimestamp, l'), sig)
 
 // ASK: say the client sends a request to a byzantine primary, who ignores it; the client then broadcasts this request to all replicas, who start a timer upon receiving it; say the timer expires, since only the primary can kick off the consensus process and this request hasnt satisfied the prepared predicate, is it just dropped/ignored when replicas move into the next view? does the new primary automatically kick off the consensus process with all "orphaned" requests? ans: the new primary should kick off the consensus process with orphaned requests, if a client broadcasts a message it should eventually be committed
-requestLog(o, clientTimestamp, l', sig, l, t') :-
+requestLog(o, clientTimestamp, l', sig, l, t) :-
     requestVerifiedIn((o, clientTimestamp, l'), sig, l', l, t), # contacted directly
     ¬attemptingViewChange(_, l, t),
-    ¬requestLog(o, clientTimestamp, l', sig, l, t), # no duplicates
-    next(t, t')
 
-requestLog(o, clientTimestamp, l', sig, l, t') :-
+requestLog(o, clientTimestamp, l', sig, l, t) :-
     preprepareLog(_, _, _, o, clientTimestamp, l', sig, l, t), # taken from a preprepare
-    ¬requestLog(o, clientTimestamp, l', sig, l, t), # no duplicates
-    next(t, t')
-
-requestLog(o, clientTimestamp, l', sig, l, t') :-
-    requestLog(o, clientTimestamp, l', sig, l, t),
-    next(t, t')
 
 ########## end client requests
 
@@ -127,11 +121,18 @@ prepareLog(v, n, d, l', sig, l, t) :-
 prepareCertSize(v, n, d, count<l'>, l, t) :-
     prepareLog(v, n, d, l', _, l, t)
 
-prepared(m, v, n, l, t) :-
+# has a preprepare and 2f + 1 matching prepares
+digestPrepared(d, v, n, l, t) :-
     preprepareLog(v, n, d, _, _, _, _, _, l, t),
     prepareCertSize(v, n, d, certSize, l, t),
     FAILURES(f),
     certSize >= 2 * f + 1
+
+# additionally has the original request logged
+prepared((o, clientTimestamp, c), v, n, l, t) :-
+    requestLog(o, clientTimestamp, c, l, t),
+    digestPrepared(d, v, n, l, t),
+    digest((o, clientTimestamp, c), d)
 
 commitOutbox((v, n, d, l), l, t) :-
     prepared(m, v, n, l, t),
@@ -1062,28 +1063,42 @@ snapshotLog(n, s, l, t) :-
 
 ########## retrieving missing client messages
 
-// ASK?: if i satisfy all requirements of committedLocal but i just don't have the message move forward
-// ASK?: if i have a pre-prepare but not the corresponding message move forward
-peerClientMessageRequestOutbox() :-
-    ...
+// ASK: do i request a client message if i satisfy all requirements of committedLocal but i just don't have the message? this would mean a preprepare, 2f + 1 prepares, and 2f + 1 commits with the same view + seq num + digest but no message
+// ASK: or should i just request it if i have a pre-prepare but not the corresponding message?; ans: committedLocal sounds reasonable
+# would satisfy the prepared predicate but is missing the original client message
+peerClientMessageRequestOutbox((v, n, l), l, t) :-
+    digestPrepared(d, v, n, l, t),
+    ¬prepared(m, v, n, l, t),
+    digest(m, d)
 
-// TODO: sent
+peerClientMessageRequestSent((v, n, l), l, t') :-
+    peerClientMessageRequestOutbox((v, n, l), l, t),
+    next(t, t')
 
-// NOTE: contact all nodes that sent me commit messages asking for their client request at seq n, take any reply whose message matches that of the digest
-peerClientMessageRequestIn()@async :-
-    ...
+peerClientMessageRequestSent((v, n, l), l, t') :-
+    peerClientMessageRequestSent((v, n, l), l, t),
+    next(t, t')
 
-peerClientMessageRequestVerifiedIn() :-
-    ...
+// ASK?: is broadcasting to everyone bad? should i just single out participants in the prepared/committedLocal cert?
+peerClientMessageRequestIn((v, n, l), sig, l, l', t')@async :-
+    peerClientMessageRequestOutbox((v, n, l), l, t),
+    ¬peerClientMessageRequestSent((v, n, l), l, t),
+    privateKeyStore(sk, l),
+    signMsg(sk, (v, n, l), sig),
+    replicas(l')
 
-peerClientMessageRequestLog() :-
-    ...
+peerClientMessageRequestVerifiedIn((v, n, l'), sig, l', l, t) :-
+    peerClientMessageRequestIn((v, n, l'), sig, l', l, t),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (v, n, l'), sig)
 
-// TODO: additional logic here...
-// ASK?: what if a node has fallen arbitrarily behind other nodes, such that it requests a client message that's been garbage collected everywhere else? is it others' responsibility to send them a (later) stable checkpoint if they request a client message that's been garbage collected, or is it safe to just ignore the request?
+peerClientMessageRequestLog(v, n, l', sig, l, t) :-
+    peerClientMessageRequestVerifiedIn((v, n, l'), sig, l', l, t)
 
-peerClientMessageReplyOutbox() :-
-    ...
+// ASK: what if a node has fallen arbitrarily behind other nodes, such that it requests a client message that's been garbage collected everywhere else? is it others' responsibility to send them a (later) stable checkpoint if they request a client message that's been garbage collected, or is it safe to just ignore the request? ans: you can just ignore them
+peerClientMessageReplyOutbox((m, v, n, l'), l, t) :-
+    peerClientMessageRequestLog(v, n, l', _, l, t),
+    prepared(m, v, n, l, t)
 
 // TODO: sent
 
@@ -1093,10 +1108,8 @@ peerClientMessageReplyIn()@async :-
 peerClientMessageReplyVerifiedIn() :-
     ...
 
-peerClientMessageReplyLog() :-
+requestLog() :-
     ...
-
-// TODO: certSize quorum logic
 
 // TODO: inserting client message into requestLog
 
