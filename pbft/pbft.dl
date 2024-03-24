@@ -23,6 +23,7 @@
 
 // NOTE: need to check that i don't rely on the existence of duplicate rows
 // NOTE: need to check that all mentions of the client request message include the client signature
+// NOTE: need to check that piggybacked preprepare/bare preprepare split is done correctly
 // ∈
 ########## EDBs
 
@@ -72,7 +73,7 @@ requestLog(o, clientTimestamp, l', sig, l, t) :-
     ¬attemptingViewChange(_, l, t),
 
 requestLog(o, clientTimestamp, l', sig, l, t) :-
-    preprepareLog(_, _, _, o, clientTimestamp, l', sig, l, t), # taken from a preprepare
+    piggybackedPreprepareLog(_, _, _, o, clientTimestamp, l', sig, l, t), # taken from a piggybacked preprepare
 
 ########## end client requests
 
@@ -80,25 +81,28 @@ requestLog(o, clientTimestamp, l', sig, l, t) :-
 
 ########## critical path
 
-preprepareVerifiedIn((v, n, d), sig, (o, clientTimestamp, clientLocation), clientSig, l', l, t) :-
-    preprepareIn((v, n, d), sig, (o, clientTimestamp, clientLocation), l', l, t),
+piggybackedPreprepareVerifiedIn((v, n, d), sig, (o, clientTimestamp, clientLocation), clientSig, l', l, t) :-
+    piggybackedPreprepareIn((v, n, d), sig, (o, clientTimestamp, clientLocation), l', l, t),
     publicKeyStore(pk, l'),
     verifySignature(pk, (v, n, d), sig)
     publicKeyStore(pk, clientLocation),
     verifySignature(pk, (o, clientTimestamp, clientLocation), clientSig)
 
-preprepareLog(v, n, d, sig, o, clientTimestamp, clientLocation, clientSig, l, t) :-
-    preprepareVerifiedIn((v, n, d), sig, (o, clientTimestamp, clientLocation), clientSig, l', l, t),
+piggybackedPreprepareLog(v, n, d, sig, o, clientTimestamp, clientLocation, clientSig, l, t) :-
+    piggybackedPreprepareVerifiedIn((v, n, d), sig, (o, clientTimestamp, clientLocation), clientSig, l', l, t),
     ¬attemptingViewChange(_, l, t),
     viewPrimary(v, l'),
     digest(o, d),
     currentView(v, l, t),
-    ¬preprepareLog(v, n, d', _, _, _, _, _, l, t),
+    ¬preprepareLog(v, n, d', _, l, t),
     d != d',
     lowWatermark(h, l, t),
     h < n,
     WATERMARK_WIDTH(k),
     n < h + k
+
+preprepareLog(v, n, d, sig, l, t) :-
+    piggybackedPreprepareLog(v, n, d, sig, _, _, _, _, l, t)
 
 prepareVerifiedIn((v, n, d, l'), sig, l', l, t) :-
     prepareIn((v, n, d, l'), sig, l', l, t),
@@ -125,7 +129,7 @@ prepareCertSize(v, n, d, count<l'>, l, t) :-
 
 # has a preprepare and 2f + 1 matching prepares
 digestPrepared(d, v, n, l, t) :-
-    preprepareLog(v, n, d, _, _, _, _, _, l, t),
+    preprepareLog(v, n, d, _, l, t),
     prepareCertSize(v, n, d, certSize, l, t),
     FAILURES(f),
     certSize >= 2 * f + 1
@@ -426,7 +430,7 @@ lastStableCheckpoint(max<n>, l, t) :-
 
 preparedProof(m, v, n, ((v, n, d), preprepSig), *((v, n, d, l'), sig), l, t) :-
     prepared(m, v, n, l, t),
-    preprepareLog(v, n, d, preprepSig, _, _, _, _, l, t),
+    preprepareLog(v, n, d, preprepSig, l, t),
     prepareLog(v, n, d, l', sig, l, t)
 
 // filter out earlier for performance
@@ -952,6 +956,21 @@ viewChangeMessageSetByView(v', viewChangeMsgSet, l, t') :-
 
 
 
+########## adding preprepare + checkpoint messages from new-view messages
+
+preprepareLog(v, n, d, sig, l, t) :-
+    newViewLog(v, _, O, _, _, l, t),
+    contains(O, ((v, n, d), sig))
+
+checkpointIn((n, d, l'), sig, l', l, t) :-
+    newViewLog(v, viewChangeMsgSet, _, _, _, l, t),
+    contains(viewChangeMsgSet, ((_, _, C, _, _), _)),
+    contains(C, ((n, d, l'), sig))
+
+########## end adding preprepare + checkpoint messages from new-view messages
+
+
+
 ########## retrieving missing checkpoint
 
 # if i have a stable checkpoint but i don't have the corresponding snapshot send out requests
@@ -1099,5 +1118,5 @@ requestLog(o, clientTimestamp, clientLocation, clientSig, l, t) :-
 
 // ASK: if there are multiple duplicate rows in a relation, will future relations that reference these rules in their body also be prone to duplicates (assuming they don't aggregate)? ans: tables are sets so duplicate rows will be merged
 // ASK: do i assume that rules are evaluated in top-to-bottom order? so a rule can't reference relations that only have rules below it, and i should assume that only the rules before it are evaluated for the current timestep by the time its evaluated? ans: only rules with aggregations/negations have all rules in the body fully evaluated before the head is evaluated, every other rule can be evaluated as soon as each rule in the body has a fact
-// ASK: when do we actually send the checkpoint state s?
-// ASK: when transitioning into a new view v', we multicast new prepare messages in view v' to all replicas (many of which may not be in the new view yet, and will therefore reject the message); do we keep resending these prepare messages (and when do we know to stop, if so)?
+// ASK: when do we actually send the checkpoint state s? ans: either periodically received from the state machine or requested from other clients
+// ASK: when transitioning into a new view v', we multicast new prepare messages in view v' to all replicas (many of which may not be in the new view yet, and will therefore reject the message); do we keep resending these prepare messages (and when do we know to stop, if so)? ans: the O set (part of the new-view message) contains the preprepares, so replicas will transition into the new view and process the preprepares at the same time
