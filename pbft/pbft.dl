@@ -7,7 +7,7 @@
 // TODO: [x] define channel to take in copy of state machine state (to send for checkpointing)
 // TODO: [x] create checkpointing logic
 // TODO: [x] account for watermarks in log messages
-// TODO: create logic to find missing client messages + checkpoint states
+// TODO: [x] create logic to find missing client messages + checkpoint states
 // TODO: rework snapshots so that they silently arrive instead of being requested
 // TODO: take stable checkpoint proofs from accepted new view messages
 // TODO: take/send prepreps + prepares from the O set of accepted new view messages before entering the next view
@@ -19,8 +19,10 @@
 // TODO: remove all ls and ts to adhere to shadaj syntax
 // TODO: find which relations are garbage collected and leave question marks for those that you're unsure about (like watermarks)
 // TODO: how to garbage collect with checkpoints? oooh the condition in msgLog that requires seqNum >= h might have a double use
-// TODO: check that i don't rely on the existence of duplicate rows
 // TODO: client implementation (if no response from primary broadcast to all nodes)
+
+// NOTE: need to check that i don't rely on the existence of duplicate rows
+// NOTE: need to check that all mentions of the client request message include the client signature
 // ∈
 ########## EDBs
 
@@ -129,10 +131,10 @@ digestPrepared(d, v, n, l, t) :-
     certSize >= 2 * f + 1
 
 # additionally has the original request logged
-prepared((o, clientTimestamp, c), v, n, l, t) :-
-    requestLog(o, clientTimestamp, c, l, t),
+prepared(((o, clientTimestamp, c), clientSig), v, n, l, t) :-
+    requestLog(o, clientTimestamp, c, clientSig, l, t),
     digestPrepared(d, v, n, l, t),
-    digest((o, clientTimestamp, c), d)
+    digest(((o, clientTimestamp, c), clientSig), d)
 
 commitOutbox((v, n, d, l), l, t) :-
     prepared(m, v, n, l, t),
@@ -168,8 +170,8 @@ commitLog(v, n, d, l', sig, l, t) :-
 
 ########## command execution + client reply
 
-committedLocal((o, clientTimestamp, l'), v, n, l, t) :-
-    prepared((o, clientTimestamp, l'), v, n, l, t),
+committedLocal(((o, clientTimestamp, l'), clientSig), v, n, l, t) :-
+    prepared(((o, clientTimestamp, l'), clientSig), v, n, l, t),
     ...
 
 // ASK: do we execute a request m if committedLocal(m, v, n) is true for SOME v or only the CURRENT v?
@@ -218,7 +220,7 @@ latestExecutedCommandSeqNum(max<n>, l, t) :-
 replyOutbox((v, clientTimestamp, l', l, res), l, t) :-
     executeCommandReplyLog(o, n, res, _, l, t),
     currentView(v, l, t), // ASK: do we want the view that the message was committed in or the view that we replied in? ans: the view we replied in, the client wants to know who the leader is
-    committedLocal((o, clientTimestamp, l'), _, n, l, t) // NOTE: if we want the view the message was committed in use the view here
+    committedLocal(((o, clientTimestamp, l'), clientSig), _, n, l, t) // NOTE: if we want the view the message was committed in use the view here
 
 replySent((v, clientTimestamp, l', l, res), l, t') :-
     replyOutbox((v, clientTimestamp, l', l, res), l, t),
@@ -329,26 +331,26 @@ lowWatermark(h, l, t) :-
 
 ########## view change triggers
 
-pendingRequests((o, clientTimestamp, c), l, t) :-
-    requestLog(o, clientTimestamp, c, _, l, t),
+pendingRequests(((o, clientTimestamp, c), clientSig), l, t) :-
+    requestLog(o, clientTimestamp, c, clientSig, l, t),
     // TODO: committedLocal is not technically correct, we only stop the timer once we've executed the request (in practice, once we've received the result of executing the request)
     // NOTE: okay it seems like it's fine, since if it's committedLocal we know it'll be executed eventually so we can treat it as completed the consensus process
-    ¬committedLocal((o, clientTimestamp, c), _, _, l, t)
+    ¬committedLocal(((o, clientTimestamp, c), clientSig), _, _, l, t)
 
-requestCreatedTimestamps((o, clientTimestamp, c), t, l, t') :-
-    requestLog(o, clientTimestamp, c, _, l, t),
-    ¬requestCreatedTimestamps((o, clientTimestamp, c), _, l, t)
+requestCreatedTimestamps(((o, clientTimestamp, c), clientSig), t, l, t') :-
+    requestLog(o, clientTimestamp, c, clientSig, l, t),
+    ¬requestCreatedTimestamps(((o, clientTimestamp, c), clientSig), _, l, t)
     next(t, t')
 
-requestCreatedTimestamps((o, clientTimestamp, c), timestamp, l, t') :-
-    requestCreatedTimestamps((o, clientTimestamp, c), timestamp, l, t),
+requestCreatedTimestamps(((o, clientTimestamp, c), clientSig), timestamp, l, t') :-
+    requestCreatedTimestamps(((o, clientTimestamp, c), clientSig), timestamp, l, t),
     next(t, t')
 
 earliestPendingRequestCreatedTimestamp(min<timestamp>, l, t) :-
     pendingRequests(msg, l, t),
     requestCreatedTimestamps(msg, timestamp, l, t)
 
-committedTimestamps((o, clientTimestamp, c), timestamp, l, t) :-
+committedTimestamps(((o, clientTimestamp, c), clientSig), timestamp, l, t) :-
     ...
 
 latestCommittedTimestamp(max<timestamp>, l, t) :-
@@ -1063,55 +1065,66 @@ snapshotLog(n, s, l, t) :-
 
 ########## retrieving missing client messages
 
-// ASK: do i request a client message if i satisfy all requirements of committedLocal but i just don't have the message? this would mean a preprepare, 2f + 1 prepares, and 2f + 1 commits with the same view + seq num + digest but no message
-// ASK: or should i just request it if i have a pre-prepare but not the corresponding message?; ans: committedLocal sounds reasonable
 # would satisfy the prepared predicate but is missing the original client message
-peerClientMessageRequestOutbox((v, n, l), l, t) :-
+peerClientMessageRequestOutbox((d, l), l, t) :-
     digestPrepared(d, v, n, l, t),
     ¬prepared(m, v, n, l, t),
     digest(m, d)
 
-peerClientMessageRequestSent((v, n, l), l, t') :-
-    peerClientMessageRequestOutbox((v, n, l), l, t),
+peerClientMessageRequestSent((d, l), l, t') :-
+    peerClientMessageRequestOutbox((d, l), l, t),
     next(t, t')
 
-peerClientMessageRequestSent((v, n, l), l, t') :-
-    peerClientMessageRequestSent((v, n, l), l, t),
+peerClientMessageRequestSent((d, l), l, t') :-
+    peerClientMessageRequestSent((d, l), l, t),
     next(t, t')
 
 // ASK?: is broadcasting to everyone bad? should i just single out participants in the prepared/committedLocal cert?
-peerClientMessageRequestIn((v, n, l), sig, l, l', t')@async :-
-    peerClientMessageRequestOutbox((v, n, l), l, t),
-    ¬peerClientMessageRequestSent((v, n, l), l, t),
+peerClientMessageRequestIn((d, l), sig, l, l', t')@async :-
+    peerClientMessageRequestOutbox((d, l), l, t),
+    ¬peerClientMessageRequestSent((d, l), l, t),
     privateKeyStore(sk, l),
-    signMsg(sk, (v, n, l), sig),
+    signMsg(sk, (d, l), sig),
     replicas(l')
 
-peerClientMessageRequestVerifiedIn((v, n, l'), sig, l', l, t) :-
-    peerClientMessageRequestIn((v, n, l'), sig, l', l, t),
+peerClientMessageRequestVerifiedIn((d, l'), sig, l', l, t) :-
+    peerClientMessageRequestIn((d, l'), sig, l', l, t),
     publicKeyStore(pk, l'),
-    verifySignature(pk, (v, n, l'), sig)
+    verifySignature(pk, (d, l'), sig)
 
-peerClientMessageRequestLog(v, n, l', sig, l, t) :-
-    peerClientMessageRequestVerifiedIn((v, n, l'), sig, l', l, t)
+peerClientMessageRequestLog(d, l', sig, l, t) :-
+    peerClientMessageRequestVerifiedIn((d, l'), sig, l', l, t)
 
-// ASK: what if a node has fallen arbitrarily behind other nodes, such that it requests a client message that's been garbage collected everywhere else? is it others' responsibility to send them a (later) stable checkpoint if they request a client message that's been garbage collected, or is it safe to just ignore the request? ans: you can just ignore them
-peerClientMessageReplyOutbox((m, v, n, l'), l, t) :-
-    peerClientMessageRequestLog(v, n, l', _, l, t),
-    prepared(m, v, n, l, t)
+# have a request in my log that matches the digest d
+peerClientMessageReplyOutbox((((o, clientTimestamp, clientLocation), clientSig), l'), l, t) :-
+    peerClientMessageRequestLog(d, l', _, l, t),
+    requestLog(o, clientTimestamp, clientLocation, clientSig, l, t),
+    digest(((o, clientTimestamp, clientLocation), clientSig), d)
 
-// TODO: sent
+peerClientMessageReplySent((((o, clientTimestamp, clientLocation), clientSig), l'), l, t') :-
+    peerClientMessageReplyOutbox((((o, clientTimestamp, clientLocation), clientSig), l'), l, t),
+    next(t, t')
 
-peerClientMessageReplyIn()@async :-
-    ...
+peerClientMessageReplySent((((o, clientTimestamp, clientLocation), clientSig), l'), l, t') :-
+    peerClientMessageReplySent((((o, clientTimestamp, clientLocation), clientSig), l'), l, t),
+    next(t, t')
 
-peerClientMessageReplyVerifiedIn() :-
-    ...
+peerClientMessageReplyIn((((o, clientTimestamp, clientLocation), clientSig), l'), sig, l, l', t')@async :-
+    peerClientMessageReplyOutbox((((o, clientTimestamp, clientLocation), clientSig), l'), l, t),
+    ¬peerClientMessageReplySent((((o, clientTimestamp, clientLocation), clientSig), l'), l, t'),
+    privateKeyStore(sk, l),
+    signMsg(sk, (((o, clientTimestamp, clientLocation), clientSig), l'), sig)
 
-requestLog() :-
-    ...
+peerClientMessageReplyVerifiedIn((((o, clientTimestamp, clientLocation), clientSig), l), sig, l', l, t) :-
+    peerClientMessageReplyIn((((o, clientTimestamp, clientLocation), clientSig), l), sig, l', l, t),
+    publicKeyStore(pk, l'),
+    verifySignature(pk, (((o, clientTimestamp, clientLocation), clientSig), l), sig)
 
-// TODO: inserting client message into requestLog
+# request matches a client message request that was sent out
+requestLog(o, clientTimestamp, clientLocation, clientSig, l, t) :-
+    peerClientMessageReplyVerifiedIn((((o, clientTimestamp, clientLocation), clientSig), l), sig, l', l, t),
+    peerClientMessageRequestOutbox((d, l), l, t),
+    digest(((o, clientTimestamp, clientLocation), clientSig), d)
 
 ########## end retrieving missing client messages
 
