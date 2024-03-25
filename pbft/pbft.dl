@@ -12,14 +12,17 @@
 // TODO: [x] take stable checkpoint proofs from accepted new view messages
 // TODO: [x] take/send prepreps + prepares from the O set of accepted new view messages before entering the next view
 // TODO: [x] add ability to replace the current state with later stable checkpoint snapshot
-// TODO: implement client message sequencing
-// TODO: add in and rework david's critical path code
+// TODO: [x] implement client message sequencing
+// TODO: check that commands are sent to execution based on seq num alone and not view to avoid repeat executions
+// TODO: [x] add in and rework david's critical path code
+// TODO: [x] add ability for new primaries to kick off the consensus process for orphaned requests
 // TODO: comments
 // TODO: remove all parentheses in outboxes
 // TODO: remove all ls and ts to adhere to shadaj syntax
 // TODO: find which relations are garbage collected and leave question marks for those that you're unsure about (like watermarks)
 // TODO: how to garbage collect with checkpoints? oooh the condition in msgLog that requires seqNum >= h might have a double use
 // TODO: client implementation (if no response from primary broadcast to all nodes)
+// TODO: filter out sets earlier for performance and create sets as soon as possible, making sure they don't explode cross products
 
 // NOTE: need to check that i don't rely on the existence of duplicate rows
 // NOTE: need to check that all mentions of the client request message include the client signature
@@ -70,16 +73,61 @@ requestVerifiedIn((o, clientTimestamp, l'), sig, l', l, t) :-
 // ASK: say the client sends a request to a byzantine primary, who ignores it; the client then broadcasts this request to all replicas, who start a timer upon receiving it; say the timer expires, since only the primary can kick off the consensus process and this request hasnt satisfied the prepared predicate, is it just dropped/ignored when replicas move into the next view? does the new primary automatically kick off the consensus process with all "orphaned" requests? ans: the new primary should kick off the consensus process with orphaned requests, if a client broadcasts a message it should eventually be committed
 requestLog(o, clientTimestamp, l', sig, l, t) :-
     requestVerifiedIn((o, clientTimestamp, l'), sig, l', l, t), # contacted directly
-    ¬attemptingViewChange(_, l, t),
+    ¬attemptingViewChange(_, l, t)
 
 requestLog(o, clientTimestamp, l', sig, l, t) :-
-    piggybackedPreprepareLog(_, _, _, o, clientTimestamp, l', sig, l, t), # taken from a piggybacked preprepare
+    piggybackedPreprepareLog(_, _, _, o, clientTimestamp, l', sig, l, t) # taken from a piggybacked preprepare
 
 ########## end client requests
 
 
 
-########## critical path
+########## preprepare + prepare
+
+takenSeqNum(n, l, t) :-
+    preprepareLog(v, n, _, _, l, t),
+    currentView(v, l, t)
+
+takenSeqNum(n, l, t) :-
+    lowWatermark(n, l, t)
+
+# next open slot is max(seq nums from preprepares in current view), defaulting to low watermark
+nextOpenSeqNum(max<n> + 1, l, t) :-
+    takenSeqNum(n, l, t)
+
+// ASK?: since if a client broadcasts a message it should eventually get committed, does that mean that when a view change happens, the next primary should automatically kick off the consensus process for all requests it has on hand that haven't satisfied the prepared predicate, as well as for all preprepares in the O-set?
+// ASK?: how do you define "orphaned" requests? is it requests that, from the primary's perspective, haven't been ordered yet (aka no preprepare in the current view)?
+# send preprepares for any request in the log that has no preprepare in the current view and isn't already committed
+piggybackedPreprepareOutbox((v, n + index(), d), (o, clientTimestamp, clientLocation), clientSig, l, t) :-
+    requestLog(o, clientTimestamp, clientLocation, clientSig, l, t),
+    digest(((o, clientTimestamp, clientLocation), clientSig), d),
+    currentView(v, l, t),
+    ¬preprepareLog(v, _, d, _, l, t),
+    ¬committedLocal(((o, clientTimestamp, clientLocation), clientSig), _, _, l, t),
+    nextOpenSeqNum(n, l, t)
+
+# must add a preprepare to own log during the next timestep to prevent index() from being invoked on the same message more than once
+piggybackedPreprepareLog(v, n, d, sig, o, clientTimestamp, clientLocation, clientSig, l, t') :-
+    piggybackedPreprepareOutbox((v, n, d), (o, clientTimestamp, clientLocation), clientSig, l, t),
+    ¬piggybackedPreprepareSent((v, n, d), (o, clientTimestamp, clientLocation), clientSig, l, t),
+    privateKeyStore(sk, l),
+    signMsg(sk, (v, n, d), sig),
+    next(t, t')
+
+piggybackedPreprepareSent((v, n, d), (o, clientTimestamp, clientLocation), clientSig, l, t') :-
+    piggybackedPreprepareOutbox((v, n, d), (o, clientTimestamp, clientLocation), clientSig, l, t),
+    next(t, t')
+
+piggybackedPreprepareSent((v, n, d), (o, clientTimestamp, clientLocation), clientSig, l, t') :-
+    piggybackedPreprepareSent((v, n, d), (o, clientTimestamp, clientLocation), clientSig, l, t),
+    next(t, t')
+
+piggybackedPreprepareIn((v, n, d), sig, (o, clientTimestamp, clientLocation), l, l', t')@async :-
+    piggybackedPreprepareOutbox((v, n, d), (o, clientTimestamp, clientLocation), clientSig, l, t),
+    ¬piggybackedPreprepareSent((v, n, d), (o, clientTimestamp, clientLocation), clientSig, l, t),
+    privateKeyStore(sk, l),
+    signMsg(sk, (v, n, d), sig),
+    replicas(l')
 
 piggybackedPreprepareVerifiedIn((v, n, d), sig, (o, clientTimestamp, clientLocation), clientSig, l', l, t) :-
     piggybackedPreprepareIn((v, n, d), sig, (o, clientTimestamp, clientLocation), l', l, t),
@@ -118,7 +166,7 @@ prepareLog(v, n, d, l', sig, l, t) :-
     WATERMARK_WIDTH(k),
     n < h + k
 
-########## end critical path
+########## end preprepare + prepare
 
 
 
@@ -165,8 +213,13 @@ commitVerifiedIn((v, n, d, l'), sig, l', l, t) :-
     verifySignature(pk, (v, n, d, l'), sig)
 
 commitLog(v, n, d, l', sig, l, t) :-
+    commitVerifiedIn((v, n, d, l'), sig, l', l, t),
     ¬attemptingViewChange(_, l, t),
-    ... # accepted commits
+    currentView(v, l, t),
+    lowWatermark(h, l, t),
+    h < n,
+    WATERMARK_WIDTH(k),
+    n < h + k
 
 ########## end message commit
 
@@ -174,11 +227,17 @@ commitLog(v, n, d, l', sig, l, t) :-
 
 ########## command execution + client reply
 
+commitCertSize(v, n, d, count<l'>, l, t) :-
+    commitLog(v, n, d, l', _, l, t)
+
 committedLocal(((o, clientTimestamp, l'), clientSig), v, n, l, t) :-
     prepared(((o, clientTimestamp, l'), clientSig), v, n, l, t),
-    ...
+    digest(((o, clientTimestamp, l'), clientSig), d),
+    commitCertSize(v, n, d, certSize, l, t),
+    FAILURES(f),
+    certSize >= 2 * f + 1
 
-// ASK: since messages can be reordered, can i assume that the state machine can execute requests sequentially based on the seq nums i provide it? and therefore i don't need to send it commands in order? ans: yes
+# assume that the state machine can execute requests sequentially based on the seq nums provided
 executeCommandOutbox((o, n), l, t) :-
     committedLocal((o, _, _), _, n, l, t)
 
@@ -245,7 +304,6 @@ snapshotVerifiedIn((n, s), sig, l', l, t) :-
     publicKeyStore(pk, l'),
     verifySignature(pk, (n, s), sig)
 
-// ASK: do we have to protect against a potentially byzantine state machine? it could send the wrong state, irrelevant snapshots that don't correspond to stable checkpoints, etc.; ans: no, the state machine is decoupled so if it's byzantine the node as a whole is byzantine and so it doesn't matter
 # dropped the signature to allow for other avenues of accepting snapshots (peer requests)
 snapshotLog(n, s, l, t) :-
     snapshotVerifiedIn((n, s), _, _, l, t)
@@ -312,7 +370,7 @@ stateOverwriteSent((n, s), l, t') :-
     stateOverwriteSent((n, s), l, t),
     next(t, t')
 
-# the state machine will ignore the request if its state is more recent than the snapshot
+# assume the state machine will ignore the request if its state is more recent than the snapshot
 stateOverwriteIn((n, s), sig, l, l', t')@async :-
     stateOverwriteOutbox((n, s), l, t),
     ¬stateOverwriteSent((n, s), l, t),
@@ -328,8 +386,6 @@ stateOverwriteIn((n, s), sig, l, l', t')@async :-
 
 pendingRequests(((o, clientTimestamp, c), clientSig), l, t) :-
     requestLog(o, clientTimestamp, c, clientSig, l, t),
-    // TODO: committedLocal is not technically correct, we only stop the timer once we've executed the request (in practice, once we've received the result of executing the request)
-    // NOTE: okay it seems like it's fine, since if it's committedLocal we know it'll be executed eventually so we can treat it as completed the consensus process
     ¬committedLocal(((o, clientTimestamp, c), clientSig), _, _, l, t)
 
 requestCreatedTimestamps(((o, clientTimestamp, c), clientSig), t, l, t') :-
@@ -345,8 +401,14 @@ earliestPendingRequestCreatedTimestamp(min<timestamp>, l, t) :-
     pendingRequests(msg, l, t),
     requestCreatedTimestamps(msg, timestamp, l, t)
 
-committedTimestamps(((o, clientTimestamp, c), clientSig), timestamp, l, t) :-
-    ...
+committedTimestamps(((o, clientTimestamp, c), clientSig), t, l, t') :-
+    committedLocal(((o, clientTimestamp, c), clientSig), _, _, l, t),
+    ¬committedTimestamps(((o, clientTimestamp, c), clientSig), _, l, t),
+    next(t, t')
+
+committedTimestamps(((o, clientTimestamp, c), clientSig), timestamp, l, t') :-
+    committedTimestamps(((o, clientTimestamp, c), clientSig), timestamp, l, t),
+    next(t, t')
 
 latestCommittedTimestamp(max<timestamp>, l, t) :-
     committedTimestamps(_, timestamp, l, t)
@@ -455,8 +517,7 @@ preparedProof(m, v, n, ((v, n, d), preprepSig), *((v, n, d, l'), sig), l, t) :-
     preprepareLog(v, n, d, preprepSig, l, t),
     prepareLog(v, n, d, l', sig, l, t)
 
-// filter out earlier for performance
-// only send highest view, can delete messages under that
+// TODO: only send highest view, can delete messages under that
 uncheckpointedPreparedProofs(*(preprep, prepareCert), l, t) :-
     preparedProof(_, _, n, preprep, prepareCert, l, t),
     lastStableCheckpoint(chkptSeqNum, l, t),
@@ -473,7 +534,6 @@ attemptingViewChange(v', l, t') :-
     v' > v,
     next(t, t')
 
-// add negation to do exactly-once semantics and avoid spam
 viewChangeOutbox((v', n, C, P, l), l, t) :-
     viewChangeTimer(v' cutoff, l, t),
     t >= cutoff,
@@ -495,7 +555,6 @@ viewChangeSent((v', n, C, P, l), l, t') :-
 // - :+ persists stuff into the *next* timestamp
 // - :- adds stuff within the same tick and nothing else
 // - .persist r1 persists everything in r1 for each tick (makes it monotonic)
-// ASK: why broadcast view changes to all replicas if the primary sends V anyway? will replicas ever use received view changes that aren't in V? ans: yes, for liveness (see paper)
 viewChangeIn((v', n, C, P, l), sig, l, l', t')@async :-
     viewChangeOutbox((v', n, C, P, l), l, t),
     ¬viewChangeSent((v', n, C, P, l), l, t),
@@ -503,8 +562,6 @@ viewChangeIn((v', n, C, P, l), sig, l, l', t')@async :-
     signMsg(sk, (v', n, C, P, l), sig),
     replicas(l')
 
-// TODO: VIEW-CHANGE TIMER, MISC. LOG CONDITIONS
-// TODO: create sets as soon as possible and make sure they don't explode cross products
 viewChangeVerifiedIn((v, n, C, P, l'), sig, l', l, t) :-
     viewChangeIn((v, n, C, P, l'), sig, l', l, t),
     publicKeyStore(pk, l'),
@@ -562,38 +619,6 @@ emptyBoundedSeqNumsFromViewChangeSet(viewChangeMsgSet, n, l, t) :-
     latestPrepareSeqNumFromViewChangeSet(viewChangeMsgSet, maxSeqNum, l, t),
     minSeqNum < n <= maxSeqNum,
     ¬highestViewPreparedMessageDigestBySeqNumFromViewChangeSet(viewChangeMsgSet, n, _, l, t)
-
-// ASK: is the set operator by rule or by table? this also applies to aggregates in general; ans: by rule
-// in other words, does
-
-// a(*u) :-
-//     f(u)
-
-// a(*v) :-
-//     g(v)
-
-// equal?
-
-// b(u) :-
-//     f(u)
-
-// b(v) :-
-//     g(v)
-
-// a(*w) :-
-//     b(w)
-
-// or does the first example instead create two different rows, one for both f and g?
-
-// ASK: can i even do? in other words, does datalog type-check at all? side question, what about tuples? ans: yes assume things are strongly type checked
-
-// a(*u) :-
-//     f(u)
-
-// a(v) :-
-//     g(v)
-
-// why it is relevant: a = O set, f(u) = a message exists in the P set for seq number n, g(v) = no message exists in the P set for seq number n (and therefore we need a no-op)
 
 # first case for an element in the O set (the message in P with the highest view under the seq number n)
 newViewPreparedMessagesFromViewChangeSet(viewChangeMsgSet, ((v', n, d), sig), l, t) :-
@@ -1089,7 +1114,7 @@ peerClientMessageRequestSent((d, l), l, t') :-
     peerClientMessageRequestSent((d, l), l, t),
     next(t, t')
 
-// ASK?: is broadcasting to everyone bad? should i just single out participants in the prepared/committedLocal cert?
+// ASK: is broadcasting to everyone bad? should i just single out participants in the prepared/committedLocal cert? ans: off critical path, not too big a deal
 peerClientMessageRequestIn((d, l), sig, l, l', t')@async :-
     peerClientMessageRequestOutbox((d, l), l, t),
     ¬peerClientMessageRequestSent((d, l), l, t),
@@ -1138,7 +1163,6 @@ requestLog(o, clientTimestamp, clientLocation, clientSig, l, t) :-
 
 ########## end retrieving missing client messages
 
+// ASK?: can i assume that async messages sent to myself will arrive immediately within the same timestep?
 // ASK: if there are multiple duplicate rows in a relation, will future relations that reference these rules in their body also be prone to duplicates (assuming they don't aggregate)? ans: tables are sets so duplicate rows will be merged
 // ASK: do i assume that rules are evaluated in top-to-bottom order? so a rule can't reference relations that only have rules below it, and i should assume that only the rules before it are evaluated for the current timestep by the time its evaluated? ans: only rules with aggregations/negations have all rules in the body fully evaluated before the head is evaluated, every other rule can be evaluated as soon as each rule in the body has a fact
-// ASK: when do we actually send the checkpoint state s? ans: either periodically received from the state machine or requested from other clients
-// ASK: when transitioning into a new view v', we multicast new prepare messages in view v' to all replicas (many of which may not be in the new view yet, and will therefore reject the message); do we keep resending these prepare messages (and when do we know to stop, if so)? ans: the O set (part of the new-view message) contains the preprepares, so replicas will transition into the new view and process the preprepares at the same time
