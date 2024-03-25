@@ -13,9 +13,11 @@
 // TODO: [x] take/send prepreps + prepares from the O set of accepted new view messages before entering the next view
 // TODO: [x] add ability to replace the current state with later stable checkpoint snapshot
 // TODO: [x] implement client message sequencing
-// TODO: check that commands are sent to execution based on seq num alone and not view to avoid repeat executions
+// TODO: [x] check that commands are sent to execution based on seq num alone and not view to avoid repeat executions
 // TODO: [x] add in and rework david's critical path code
 // TODO: [x] add ability for new primaries to kick off the consensus process for orphaned requests
+// TODO: accepting view change message logic
+// TODO: double check attemptingViewChange logic
 // TODO: comments
 // TODO: remove all parentheses in outboxes
 // TODO: remove all ls and ts to adhere to shadaj syntax
@@ -136,15 +138,16 @@ piggybackedPreprepareVerifiedIn((v, n, d), sig, (o, clientTimestamp, clientLocat
     publicKeyStore(pk, clientLocation),
     verifySignature(pk, (o, clientTimestamp, clientLocation), clientSig)
 
+# logic to accept preprepare messages
 piggybackedPreprepareLog(v, n, d, sig, o, clientTimestamp, clientLocation, clientSig, l, t) :-
-    piggybackedPreprepareVerifiedIn((v, n, d), sig, (o, clientTimestamp, clientLocation), clientSig, l', l, t),
-    ¬attemptingViewChange(_, l, t),
-    viewPrimary(v, l'),
-    digest(o, d),
-    currentView(v, l, t),
-    ¬preprepareLog(v, n, d', _, l, t),
+    piggybackedPreprepareVerifiedIn((v, n, d), sig, (o, clientTimestamp, clientLocation), clientSig, l', l, t), # signatures verified
+    ¬attemptingViewChange(_, l, t), # not attempting a view change
+    viewPrimary(v, l'), # is sent from the primary
+    digest(o, d), # d is the digest of the client message
+    currentView(v, l, t), # it is in view v
+    ¬preprepareLog(v, n, d', _, l, t), # has not accepted a preprepare for (v, n) with a different digest
     d != d',
-    lowWatermark(h, l, t),
+    lowWatermark(h, l, t), # the sequence number is between the low and high watermarks
     h < n,
     WATERMARK_WIDTH(k),
     n < h + k
@@ -152,16 +155,36 @@ piggybackedPreprepareLog(v, n, d, sig, o, clientTimestamp, clientLocation, clien
 preprepareLog(v, n, d, sig, l, t) :-
     piggybackedPreprepareLog(v, n, d, sig, _, _, _, _, l, t)
 
+# send prepares after accepting a preprepare
+prepareOutbox((v, n, d, l), l, t) :-
+    preprepareLog(v, n, d, _, l, t)
+
+prepareSent((v, n, d, l'), l, t') :-
+    prepareOutbox((v, n, d, l), l, t),
+    next(t, t')
+
+prepareSent((v, n, d, l'), l, t') :-
+    prepareSent((v, n, d, l), l, t),
+    next(t, t')
+
+prepareIn((v, n, d, l), sig, l, l', t')@async :-
+    prepareOutbox((v, n, d, l), l, t),
+    ¬prepareSent((v, n, d, l), l, t),
+    privateKeyStore(sk, l),
+    signMsg(sk, (v, n, d, l), sig),
+    replicas(l')
+
 prepareVerifiedIn((v, n, d, l'), sig, l', l, t) :-
     prepareIn((v, n, d, l'), sig, l', l, t),
     publicKeyStore(pk, l'),
     verifySignature(pk, (v, n, d, l'), sig)
 
+# logic to accept prepare messages
 prepareLog(v, n, d, l', sig, l, t) :-
-    prepareVerifiedIn((v, n, d, l'), sig, l', l, t),
-    ¬attemptingViewChange(_, l, t),
-    currentView(v, l, t),
-    lowWatermark(h, l, t),
+    prepareVerifiedIn((v, n, d, l'), sig, l', l, t), # signature verified
+    ¬attemptingViewChange(_, l, t), # not attempting a view change
+    currentView(v, l, t), # it is in view v
+    lowWatermark(h, l, t), # the sequence number is between the low and high watermarks
     h < n,
     WATERMARK_WIDTH(k),
     n < h + k
@@ -188,6 +211,7 @@ prepared(((o, clientTimestamp, c), clientSig), v, n, l, t) :-
     digestPrepared(d, v, n, l, t),
     digest(((o, clientTimestamp, c), clientSig), d)
 
+# send commits after a message satisfies prepared predicate
 commitOutbox((v, n, d, l), l, t) :-
     prepared(m, v, n, l, t),
     digest(m, d)
@@ -212,11 +236,12 @@ commitVerifiedIn((v, n, d, l'), sig, l', l, t) :-
     publicKeyStore(pk, l'),
     verifySignature(pk, (v, n, d, l'), sig)
 
+# logic to accept commit messages
 commitLog(v, n, d, l', sig, l, t) :-
-    commitVerifiedIn((v, n, d, l'), sig, l', l, t),
-    ¬attemptingViewChange(_, l, t),
-    currentView(v, l, t),
-    lowWatermark(h, l, t),
+    commitVerifiedIn((v, n, d, l'), sig, l', l, t), # signature verified
+    ¬attemptingViewChange(_, l, t), # not attempting a view change
+    currentView(v, l, t), # it is in view v
+    lowWatermark(h, l, t), # the sequence number is between the low and high watermarks
     h < n,
     WATERMARK_WIDTH(k),
     n < h + k
@@ -230,6 +255,7 @@ commitLog(v, n, d, l', sig, l, t) :-
 commitCertSize(v, n, d, count<l'>, l, t) :-
     commitLog(v, n, d, l', _, l, t)
 
+# satisfies prepared and also has 2f + 1 commit messages
 committedLocal(((o, clientTimestamp, l'), clientSig), v, n, l, t) :-
     prepared(((o, clientTimestamp, l'), clientSig), v, n, l, t),
     digest(((o, clientTimestamp, l'), clientSig), d),
@@ -237,6 +263,7 @@ committedLocal(((o, clientTimestamp, l'), clientSig), v, n, l, t) :-
     FAILURES(f),
     certSize >= 2 * f + 1
 
+# execute command after it satisfies committedLocal
 # assume that the state machine can execute requests sequentially based on the seq nums provided
 executeCommandOutbox((o, n), l, t) :-
     committedLocal((o, _, _), _, n, l, t)
@@ -267,9 +294,7 @@ executeCommandReplyVerifiedIn((o, n, res), sig, l', l, t) :-
 executeCommandReplyLog(o, n, res, sig, l, t) :-
     executeCommandReplyVerifiedIn((o, n, res), sig, _, l, t)
 
-latestExecutedCommandSeqNum(max<n>, l, t) :-
-    executeCommandReplyLog(_, n, _, _, l, t)
-
+# reply to client once we get response from state machine
 replyOutbox((v, clientTimestamp, l', l, res), l, t) :-
     executeCommandReplyLog(o, n, res, _, l, t),
     currentView(v, l, t),
@@ -306,9 +331,10 @@ snapshotVerifiedIn((n, s), sig, l', l, t) :-
 
 # dropped the signature to allow for other avenues of accepting snapshots (peer requests)
 snapshotLog(n, s, l, t) :-
-    snapshotVerifiedIn((n, s), _, _, l, t)
+    snapshotVerifiedIn((n, s), _, l', l, t),
+    STATE_MACHINE(l') # sent from own state machine, peer requested snapshots are below
 
-# broadcast checkpoint messages whenever a snapshot comes in, we defer the timing logic of snapshots to snapshotRequest
+# broadcast checkpoint messages whenever a snapshot comes in
 checkpointOutbox((n, d, l), l, t) :-
     snapshotLog(n, s, l, t),
     digest(s, d)
@@ -341,6 +367,7 @@ checkpointLog(n, d, l', sig, l, t) :-
 checkpointCertSize(n, d, count<l'>, l, t) :-
     checkpointLog(n, d, l', _, l, t)
 
+# a checkpoint is stable after receiving 2f + 1 matching (n, d) checkpoint messages
 stableCheckpoint(n, d, l, t) :-
     checkpointCertSize(n, d, certSize, l, t),
     FAILURES(f),
@@ -352,8 +379,12 @@ stableCheckpoint(n, d, l, t) :-
     n = zero - 1,
     INITIAL_STATE(d)
 
+# low watermark is defined as the latest stable checkpoint
 lowWatermark(h, l, t) :-
     lastStableCheckpoint(h, l, t)
+
+latestExecutedCommandSeqNum(max<n>, l, t) :-
+    executeCommandReplyLog(_, n, _, _, l, t)
 
 # send request to overwrite the state if we have a stable checkpoint snapshot above our latest executed command
 stateOverwriteOutbox((n', s), l, t) :-
@@ -384,6 +415,7 @@ stateOverwriteIn((n, s), sig, l, l', t')@async :-
 
 ########## view change triggers
 
+# tracking timestamps of pending requests
 pendingRequests(((o, clientTimestamp, c), clientSig), l, t) :-
     requestLog(o, clientTimestamp, c, clientSig, l, t),
     ¬committedLocal(((o, clientTimestamp, c), clientSig), _, _, l, t)
@@ -401,6 +433,7 @@ earliestPendingRequestCreatedTimestamp(min<timestamp>, l, t) :-
     pendingRequests(msg, l, t),
     requestCreatedTimestamps(msg, timestamp, l, t)
 
+# tracking timestamps of committed messages
 committedTimestamps(((o, clientTimestamp, c), clientSig), t, l, t') :-
     committedLocal(((o, clientTimestamp, c), clientSig), _, _, l, t),
     ¬committedTimestamps(((o, clientTimestamp, c), clientSig), _, l, t),
@@ -413,6 +446,7 @@ committedTimestamps(((o, clientTimestamp, c), clientSig), timestamp, l, t') :-
 latestCommittedTimestamp(max<timestamp>, l, t) :-
     committedTimestamps(_, timestamp, l, t)
 
+# combining the two to set up taking the max between them
 latestCommittedAndEarliestPendingTimestamps(timestamp, l, t) :-
     earliestPendingRequestCreatedTimestamp(timestamp, l, t)
 
@@ -476,7 +510,7 @@ higherViewChangeTimer(v', t, l, t) :-
     minHigherViewChangeMessage(v', l, t),
     ¬higherViewChangeTimerElapsed(v', l, t)
 
-# the timer goes "off" for one timestep 
+# ensuring the timer only goes "off" for one timestep
 higherViewChangeTimerElapsed(v', l, t) :-
     higherViewChangeTimer(v', cutoff, l, t),
     t >= cutoff,
@@ -486,6 +520,7 @@ higherViewChangeTimerElapsed(v', l, t') :-
     higherViewChangeTimerElapsed(v', l, t),
     next(t, t')
 
+# combining the different types of view change triggers
 aggregateViewChangeTimer(v', cutoff, l, t) :-
     requestExpiredViewChangeTimer(v', cutoff, l, t)
 
@@ -505,6 +540,7 @@ viewChangeTimer(v', min<cutoff>, l, t) :-
 
 ########## creating view-change + new-view messages
 
+# aggregating checkpoint messages to form the C set
 stableCheckpointProof(n, d, *((n, d, l'), sig), l, t) :-
     stableCheckpoint(n, d, l, t),
     checkpointLog(n, d, l', sig, l, t)
@@ -512,11 +548,13 @@ stableCheckpointProof(n, d, *((n, d, l'), sig), l, t) :-
 lastStableCheckpoint(max<n>, l, t) :-
     stableCheckpoint(n, _, l, t)
 
+# aggregating preprepare + prepare messages into a P_m set
 preparedProof(m, v, n, ((v, n, d), preprepSig), *((v, n, d, l'), sig), l, t) :-
     prepared(m, v, n, l, t),
     preprepareLog(v, n, d, preprepSig, l, t),
     prepareLog(v, n, d, l', sig, l, t)
 
+# aggregating P_m sets into the P set
 // TODO: only send highest view, can delete messages under that
 uncheckpointedPreparedProofs(*(preprep, prepareCert), l, t) :-
     preparedProof(_, _, n, preprep, prepareCert, l, t),
