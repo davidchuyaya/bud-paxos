@@ -80,6 +80,8 @@ requestLog(o, clientTimestamp, l', sig, l, t) :-
 requestLog(o, clientTimestamp, l', sig, l, t) :-
     piggybackedPreprepareLog(_, _, _, o, clientTimestamp, l', sig, l, t) # taken from a piggybacked preprepare
 
+.persist requestLog
+
 ########## end client requests
 
 
@@ -152,8 +154,20 @@ piggybackedPreprepareLog(v, n, d, sig, o, clientTimestamp, clientLocation, clien
     WATERMARK_WIDTH(k),
     n < h + k
 
+piggybackedPreprepareLog(v, n, d, sig, o, clientTimestamp, clientLocation, clientSig, l, t') :-
+    piggybackedPreprepareLog(v, n, d, sig, o, clientTimestamp, clientLocation, clientSig, l, t),
+    lowWatermark(h, l, t), # only keep messages above the low watermark
+    h < n,
+    next(t, t')
+
 preprepareLog(v, n, d, sig, l, t) :-
     piggybackedPreprepareLog(v, n, d, sig, _, _, _, _, l, t)
+
+preprepareLog(v, n, d, sig, l, t') :-
+    preprepareLog(v, n, d, sig, l, t),
+    lowWatermark(h, l, t), # only keep messages above the low watermark
+    h < n,
+    next(t, t')
 
 # send prepares after accepting a preprepare
 prepareOutbox((v, n, d, l), l, t) :-
@@ -188,6 +202,12 @@ prepareLog(v, n, d, l', sig, l, t) :-
     h < n,
     WATERMARK_WIDTH(k),
     n < h + k
+
+prepareLog(v, n, d, l', sig, l, t') :-
+    prepareLog(v, n, d, l', sig, l, t),
+    lowWatermark(h, l, t), # only keep messages above the low watermark
+    h < n,
+    next(t, t')
 
 ########## end preprepare + prepare
 
@@ -245,6 +265,12 @@ commitLog(v, n, d, l', sig, l, t) :-
     h < n,
     WATERMARK_WIDTH(k),
     n < h + k
+
+commitLog(v, n, d, l', sig, l, t') :-
+    commitLog(v, n, d, l', sig, l, t),
+    lowWatermark(h, l, t), # only keep messages above the low watermark
+    h < n,
+    next(t, t')
 
 ########## end message commit
 
@@ -334,6 +360,12 @@ snapshotLog(n, s, l, t) :-
     snapshotVerifiedIn((n, s), _, l', l, t),
     STATE_MACHINE(l') # sent from own state machine, peer requested snapshots are below
 
+snapshotLog(n, s, l, t') :-
+    snapshotLog(n, s, l, t),
+    lowWatermark(h, l, t), # only keep messages above the low watermark
+    h <= n, # include equality to make sure not to discard the latest stable checkpoint snapshot
+    next(t, t')
+
 # broadcast checkpoint messages whenever a snapshot comes in
 checkpointOutbox((n, d, l), l, t) :-
     snapshotLog(n, s, l, t),
@@ -363,6 +395,12 @@ checkpointLog(n, d, l', sig, l, t) :-
     checkpointVerifiedIn((n, d, l'), sig, l', l, t),
     ¬checkpointLog(n, d', l', sig, l, t), # we only accept the first checkpoint message from any (n, l') pair
     d != d'
+
+checkpointLog(n, d, l', sig, l, t') :-
+    checkpointLog(n, d, l', sig, l, t),
+    lowWatermark(h, l, t), # only keep messages above the low watermark
+    h <= n, # include equality to make sure not to discard the latest stable checkpoint proof
+    next(t, t')
 
 checkpointCertSize(n, d, count<l'>, l, t) :-
     checkpointLog(n, d, l', _, l, t)
@@ -1045,7 +1083,9 @@ viewChangeMessageSetByView(v', viewChangeMsgSet, l, t') :-
 
 preprepareLog(v, n, d, sig, l, t) :-
     newViewLog(v, _, O, _, _, l, t),
-    contains(O, ((v, n, d), sig))
+    contains(O, ((v, n, d), sig)),
+    lowWatermark(h, l, t), # only keep messages above the low watermark
+    h < n
 
 checkpointIn((n, d, l'), sig, l', l, t) :-
     newViewLog(v, viewChangeMsgSet, _, _, _, l, t),
@@ -1086,11 +1126,17 @@ peerSnapshotRequestVerifiedIn((l', n), sig, l', l, t) :-
     publicKeyStore(pk, l'),
     verifySignature(pk, (l', n), sig)
 
-# if node is correct, n is guaranteed to be less than (if it's behind) or equal to (if it's caught up) than our last stable checkpoint; ignored if otherwise
+# if l' is correct, n is guaranteed to be less than (if it's behind) or equal to (if it's caught up) than our last stable checkpoint; ignored if otherwise
 peerSnapshotRequestLog(l', n, sig, l, t) :-
     peerSnapshotRequestVerifiedIn((l', n), sig, l', l, t),
     lowWatermark(h, l, t),
     n <= h
+
+peerSnapshotRequestLog(l', n, sig, l, t') :-
+    peerSnapshotRequestLog(l', n, sig, l, t),
+    lowWatermark(h, l, t), # only keep messages above the low watermark
+    h < n,
+    next(t, t')
 
 # reply with snapshot of your highest stable checkpoint
 peerSnapshotRequestReplyOutbox((s, C, l'), l, t) :-
@@ -1118,8 +1164,6 @@ peerSnapshotRequestReplyVerifiedIn((s, C, l), sig, l', l, t) :-
     publicKeyStore(pk, l'),
     verifySignature(pk, (s, C, l), sig)
 
-// genius mode activated
-// TODO: remove the "genius mode activated" comment
 # feed checkpoint messages from sent proof into checkpointIn
 checkpointIn((n, d, l'), sig, l', l, t) :-
     peerSnapshotRequestReplyVerifiedIn((_, C, _), _, _, l, t),
@@ -1130,7 +1174,10 @@ snapshotLog(n, s, l, t) :-
     peerSnapshotRequestReplyVerifiedIn((s, _, _), _, _, l, t),
     lastStableCheckpoint(n, l, t),
     stableCheckpoint(n, d, l, t),
-    digest(s, d)
+    digest(s, d),
+    lowWatermark(h, l, t), # only keep messages above the low watermark
+    h <= n, # include equality to make sure not to discard the latest stable checkpoint snapshot
+    next(t, t')
 
 ########## end retrieving missing checkpoint
 
