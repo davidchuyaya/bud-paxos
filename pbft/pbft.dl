@@ -154,6 +154,7 @@ piggybackedPreprepareLog(v, n, d, sig, o, clientTimestamp, clientLocation, clien
     WATERMARK_WIDTH(k),
     n < h + k
 
+# conditional persist for garbage collection based on low watermark
 piggybackedPreprepareLog(v, n, d, sig, o, clientTimestamp, clientLocation, clientSig, l, t') :-
     piggybackedPreprepareLog(v, n, d, sig, o, clientTimestamp, clientLocation, clientSig, l, t),
     lowWatermark(h, l, t), # only keep messages above the low watermark
@@ -163,6 +164,7 @@ piggybackedPreprepareLog(v, n, d, sig, o, clientTimestamp, clientLocation, clien
 preprepareLog(v, n, d, sig, l, t) :-
     piggybackedPreprepareLog(v, n, d, sig, _, _, _, _, l, t)
 
+# conditional persist for garbage collection based on low watermark
 preprepareLog(v, n, d, sig, l, t') :-
     preprepareLog(v, n, d, sig, l, t),
     lowWatermark(h, l, t), # only keep messages above the low watermark
@@ -203,6 +205,7 @@ prepareLog(v, n, d, l', sig, l, t) :-
     WATERMARK_WIDTH(k),
     n < h + k
 
+# conditional persist for garbage collection based on low watermark
 prepareLog(v, n, d, l', sig, l, t') :-
     prepareLog(v, n, d, l', sig, l, t),
     lowWatermark(h, l, t), # only keep messages above the low watermark
@@ -266,6 +269,7 @@ commitLog(v, n, d, l', sig, l, t) :-
     WATERMARK_WIDTH(k),
     n < h + k
 
+# conditional persist for garbage collection based on low watermark
 commitLog(v, n, d, l', sig, l, t') :-
     commitLog(v, n, d, l', sig, l, t),
     lowWatermark(h, l, t), # only keep messages above the low watermark
@@ -320,6 +324,8 @@ executeCommandReplyVerifiedIn((o, n, res), sig, l', l, t) :-
 executeCommandReplyLog(o, n, res, sig, l, t) :-
     executeCommandReplyVerifiedIn((o, n, res), sig, _, l, t)
 
+.persist executeCommandReplyLog
+
 # reply to client once we get response from state machine
 replyOutbox((v, clientTimestamp, l', l, res), l, t) :-
     executeCommandReplyLog(o, n, res, _, l, t),
@@ -360,6 +366,7 @@ snapshotLog(n, s, l, t) :-
     snapshotVerifiedIn((n, s), _, l', l, t),
     STATE_MACHINE(l') # sent from own state machine, peer requested snapshots are below
 
+# conditional persist for garbage collection based on low watermark
 snapshotLog(n, s, l, t') :-
     snapshotLog(n, s, l, t),
     lowWatermark(h, l, t), # only keep messages above the low watermark
@@ -396,6 +403,7 @@ checkpointLog(n, d, l', sig, l, t) :-
     ¬checkpointLog(n, d', l', sig, l, t), # we only accept the first checkpoint message from any (n, l') pair
     d != d'
 
+# conditional persist for garbage collection based on low watermark
 checkpointLog(n, d, l', sig, l, t') :-
     checkpointLog(n, d, l', sig, l, t),
     lowWatermark(h, l, t), # only keep messages above the low watermark
@@ -646,6 +654,8 @@ viewChangeVerifiedIn((v, n, C, P, l'), sig, l', l, t) :-
 viewChangeLog(v, n, C, P, l', sig, l, t) :-
     ... # accepted view-changes
     // check i am the supposed primary of the new view? no, new primary will do check before sending out new-view messages
+
+.persist viewChangeLog
 
 viewChangeCertSize(v, count<l'>, l, t) :-
     viewChangeLog(v, _, _, _, l', _, l, t)
@@ -1041,6 +1051,8 @@ newViewLog(v', viewChangeMsgSet, O, sig, l', l, t) :-
     viewChangeMessageSetByView(v', viewChangeMsgSet, l, t), # is the first new-view message in this view
     newViewPreparedSetFromViewChangeSet(viewChangeMsgSet, O, l, t) # its O set matches the one we would've created
 
+.persist newViewLog
+
 # potential views based on accepted new-view messages
 enteredViews(v, l, t) :-
     newViewLog(v, _, _, _, _, l, t)
@@ -1132,6 +1144,7 @@ peerSnapshotRequestLog(l', n, sig, l, t) :-
     lowWatermark(h, l, t),
     n <= h
 
+# conditional persist for garbage collection based on low watermark
 peerSnapshotRequestLog(l', n, sig, l, t') :-
     peerSnapshotRequestLog(l', n, sig, l, t),
     lowWatermark(h, l, t), # only keep messages above the low watermark
@@ -1214,6 +1227,8 @@ peerClientMessageRequestVerifiedIn((d, l'), sig, l', l, t) :-
 
 peerClientMessageRequestLog(d, l', sig, l, t) :-
     peerClientMessageRequestVerifiedIn((d, l'), sig, l', l, t)
+
+.persist peerClientMessageRequestLog
 
 # have a request in my log that matches the digest d
 peerClientMessageReplyOutbox((((o, clientTimestamp, clientLocation), clientSig), l'), l, t) :-
