@@ -18,6 +18,9 @@
 // TODO: [x] add ability for new primaries to kick off the consensus process for orphaned requests
 // TODO: accepting view change message logic
 // TODO: double check attemptingViewChange logic
+// TODO: update takenSeqNum logic to match david's paxos code
+// TODO: double check all negations to avoid negation cycles
+// TODO: reduce equijoining to as little columns as possible
 // TODO: comments
 // TODO: remove all parentheses in outboxes
 // TODO: remove all ls and ts to adhere to shadaj syntax
@@ -106,6 +109,7 @@ piggybackedPreprepareOutbox((v, n + index(), d), (o, clientTimestamp, clientLoca
     requestLog(o, clientTimestamp, clientLocation, clientSig, l, t),
     digest(((o, clientTimestamp, clientLocation), clientSig), d),
     currentView(v, l, t),
+    viewPrimary(v, l),
     ¬preprepareLog(v, _, d, _, l, t),
     ¬committedLocal(((o, clientTimestamp, clientLocation), clientSig), _, _, l, t),
     nextOpenSeqNum(n, l, t)
